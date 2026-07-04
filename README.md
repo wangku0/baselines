@@ -131,6 +131,17 @@ contains the generated answers and empty label fields for local/manual ASR, RR,
 SARR and semantic evaluation. These metrics are intentionally not computed by
 this repository because the evaluation path performs no external API calls.
 
+For inference on two 16 GB GPUs, force a balanced model split while reserving
+space for generation caches:
+```
+CUDA_VISIBLE_DEVICES=0,1 python ckpt_infer.py \
+  --eval_file dataset/violence_half_train.json \
+  --model_path llava-hf/llava-1.5-7b-hf \
+  --output_file results/base_violence_half_predictions.json \
+  --device_map auto \
+  --max_memory_per_gpu 13GiB
+```
+
 For `Specificity`, we evaluate the unlearned model on GQA, VisWiz, SQA, VQA, POPE, Mm-Vet, and MMB, and report the average score. To compute these metrics, you can refer to the original repository.
 
 ## Acknowledgement

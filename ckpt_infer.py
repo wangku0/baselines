@@ -24,10 +24,20 @@ def main(args):
 
     processor = AutoProcessor.from_pretrained(model_path)
     tokenizer = processor.tokenizer
+    use_device_map = args.device_map == "auto"
+    max_memory = None
+    if use_device_map and args.max_memory_per_gpu:
+        max_memory = {
+            gpu_index: args.max_memory_per_gpu
+            for gpu_index in range(torch.cuda.device_count())
+        }
+
     model = LlavaForConditionalGeneration.from_pretrained(
         model_path,
         attn_implementation=get_attn_implementation(),
-        torch_dtype=torch.float16
+        torch_dtype=torch.float16,
+        device_map="auto" if use_device_map else None,
+        max_memory=max_memory,
     )
     if args.checkpoint_path is not None:
         print("Merging Lora Weights.....")
@@ -47,8 +57,14 @@ def main(args):
         )
         model = model.merge_and_unload()
 
-    model.half().to("cuda:0")
+    if not use_device_map:
+        model.half().to("cuda:0")
     model.eval()
+    input_device = model.get_input_embeddings().weight.device
+    if use_device_map:
+        print(f"Model device map: {model.hf_device_map}")
+    else:
+        print("Model device: cuda:0")
 
     with open(file, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -70,9 +86,9 @@ def main(args):
         inputs = processor(images=image, text=prompt, return_tensors="pt")
         inputs = {
             key: (
-                value.to(device=model.device, dtype=model.dtype)
+                value.to(device=input_device, dtype=model.dtype)
                 if torch.is_floating_point(value)
-                else value.to(model.device)
+                else value.to(input_device)
             )
             for key, value in inputs.items()
         }
@@ -210,5 +226,16 @@ if __name__ == "__main__":
     parser.add_argument("--output_file", type=str, required=True, help="path to save the output results")
     parser.add_argument("--checkpoint_path", choices=None, default=None, type=str, help="lora weights of unlearning methods")
     parser.add_argument("--loss_type", choices=["ga", "kl", "po",  "retain", "full","gd","gapd","gdpd","klpd","popd","idk","idkpd"], default="ga", type=str, help="unlearning method")
+    parser.add_argument(
+        "--device_map",
+        choices=["auto", "single"],
+        default="auto",
+        help="auto shards the model across all visible GPUs; single uses cuda:0",
+    )
+    parser.add_argument(
+        "--max_memory_per_gpu",
+        default=None,
+        help="optional per-GPU limit used by device_map=auto, e.g. 13GiB",
+    )
     args = parser.parse_args()
     main(args)
