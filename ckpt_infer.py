@@ -4,8 +4,7 @@ import torch
 import random
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoTokenizer, CLIPImageProcessor
-from transformers import LlavaForConditionalGeneration
+from transformers import AutoProcessor, LlavaForConditionalGeneration
 import argparse
 from peft import LoraConfig, get_peft_model
 from conversation import conv_templates  
@@ -23,16 +22,13 @@ def main(args):
     tokens_harm=512
 
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    processor = AutoProcessor.from_pretrained(model_path)
+    tokenizer = processor.tokenizer
     model = LlavaForConditionalGeneration.from_pretrained(
         model_path,
         attn_implementation=get_attn_implementation(),
         torch_dtype=torch.float16
     )
-    image_processor = CLIPImageProcessor.from_pretrained(
-        "openai/clip-vit-large-patch14-336"
-    )
-
     if args.checkpoint_path is not None:
         print("Merging Lora Weights.....")
         target_modules = r'.*language_model.*\.(up_proj|k_proj|linear_2|down_proj|v_proj|q_proj|o_proj|gate_proj|linear_1)'
@@ -59,7 +55,7 @@ def main(args):
 
     results = []
 
-    def generate_responses(prompt_text, image_tensor,
+    def generate_responses(prompt_text, image,
                            num_responses=1,
                            temperature=1.0,
                            top_p=0.9,
@@ -71,9 +67,15 @@ def main(args):
         conv.append_message(conv.roles[1], None)
         prompt = conv.get_prompt()
 
-        inputs = tokenizer(prompt, return_tensors='pt')
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-        inputs["pixel_values"] = image_tensor
+        inputs = processor(images=image, text=prompt, return_tensors="pt")
+        inputs = {
+            key: (
+                value.to(device=model.device, dtype=model.dtype)
+                if torch.is_floating_point(value)
+                else value.to(model.device)
+            )
+            for key, value in inputs.items()
+        }
 
         all_predictions = []
         for _ in range(num_responses):
@@ -85,8 +87,9 @@ def main(args):
                 top_p=top_p,
                 num_beams=num_beams
             )
-            decoded = tokenizer.decode(
-                output[0], skip_special_tokens=True
+            generated_ids = output[0, inputs["input_ids"].shape[1]:]
+            decoded = processor.decode(
+                generated_ids, skip_special_tokens=True
             ).strip()
 
             if "ASSISTANT:" in decoded:
@@ -107,12 +110,10 @@ def main(args):
         sd_image_path = resolve_dataset_path(line.get("SDImage_path"))
         if sd_image_path and os.path.exists(sd_image_path):
             sd_image = Image.open(sd_image_path).convert('RGB')
-            sd_image_tensor = image_processor.preprocess(
-                sd_image, return_tensors='pt'
-            )['pixel_values'].half().to(model.device)
+            sd_image_input = sd_image
         else:
-            print("sd_image_tensor is None")
-            sd_image_tensor = None
+            print("sd_image_input is None")
+            sd_image_input = None
 
 
         image_id_path = resolve_dataset_path(
@@ -120,12 +121,10 @@ def main(args):
         )
         if image_id_path and os.path.exists(image_id_path):
             id_image = Image.open(image_id_path).convert('RGB')
-            id_image_tensor = image_processor.preprocess(
-                id_image, return_tensors='pt'
-            )['pixel_values'].half().to(model.device)
+            id_image_input = id_image
         else:
-            print("id_image_tensor is None")
-            id_image_tensor = None
+            print("id_image_input is None")
+            id_image_input = None
 
         output_line = {}
         for k, v in line.items():
@@ -135,22 +134,22 @@ def main(args):
             output_line["SDImage_path"] = sd_image_path
 
         unsafe_pairs = output_line.get("unsafe_pairs", [])
-        if sd_image_tensor is not None:
+        if sd_image_input is not None:
             for up in unsafe_pairs:
                 q = up.get("question", "")
 
                 prompt_text = f"<image>\n{q}"
-                new_sd_resp = generate_responses(prompt_text, sd_image_tensor, num_responses=1,my_max_new_tokens=tokens_sd)
+                new_sd_resp = generate_responses(prompt_text, sd_image_input, num_responses=1,my_max_new_tokens=tokens_sd)
 
                 if new_sd_resp:
                     up["sd_response"] = new_sd_resp[0]
 
-        if id_image_tensor is not None:
+        if id_image_input is not None:
             if "UnharmPair_text1" in output_line and isinstance(output_line["UnharmPair_text1"], dict):
                 q_text1 = output_line["UnharmPair_text1"].get("Question", "")
                 if q_text1.strip():
                     prompt_text1 = f"<image>\n{q_text1}"
-                    new_pred_text1 = generate_responses(prompt_text1, id_image_tensor, num_responses=1,my_max_new_tokens=tokens_text)
+                    new_pred_text1 = generate_responses(prompt_text1, id_image_input, num_responses=1,my_max_new_tokens=tokens_text)
                     if new_pred_text1:
                         output_line["UnharmPair_text1"]["Prediction"] = new_pred_text1[0]
 
@@ -158,7 +157,7 @@ def main(args):
                 q_text2 = output_line["UnharmPair_text2"].get("Question", "")
                 if q_text2.strip():
                     prompt_text2 = f"<image>\n{q_text2}"
-                    new_pred_text2 = generate_responses(prompt_text2, id_image_tensor, num_responses=1,my_max_new_tokens=tokens_text)
+                    new_pred_text2 = generate_responses(prompt_text2, id_image_input, num_responses=1,my_max_new_tokens=tokens_text)
                     if new_pred_text2:
                         output_line["UnharmPair_text2"]["Prediction"] = new_pred_text2[0]
 
@@ -166,7 +165,7 @@ def main(args):
                 q_img1 = output_line["UnharmPair_image1"].get("Question", "")
                 if q_img1.strip():
                     prompt_img1 = f"<image>\n{q_img1}"
-                    new_pred_img1 = generate_responses(prompt_img1, id_image_tensor, num_responses=1,my_max_new_tokens=tokens_image)
+                    new_pred_img1 = generate_responses(prompt_img1, id_image_input, num_responses=1,my_max_new_tokens=tokens_image)
                     if new_pred_img1:
                         output_line["UnharmPair_image1"]["Prediction"] = new_pred_img1[0]
 
@@ -174,18 +173,18 @@ def main(args):
                 q_img2 = output_line["UnharmPair_image2"].get("Question", "")
                 if q_img2.strip():
                     prompt_img2 = f"<image>\n{q_img2}"
-                    new_pred_img2 = generate_responses(prompt_img2, id_image_tensor, num_responses=1,my_max_new_tokens=tokens_image)
+                    new_pred_img2 = generate_responses(prompt_img2, id_image_input, num_responses=1,my_max_new_tokens=tokens_image)
                     if new_pred_img2:
                         output_line["UnharmPair_image2"]["Prediction"] = new_pred_img2[0]
 
-        if id_image_tensor is not None:
+        if id_image_input is not None:
             for up in unsafe_pairs:
                 if "model_response" in up:
                     del up["model_response"]
 
                 q = up.get("question", "")
                 prompt_text = f"<image>\n{q}"
-                model_preds = generate_responses(prompt_text, id_image_tensor, num_responses=3,my_max_new_tokens=tokens_harm)
+                model_preds = generate_responses(prompt_text, id_image_input, num_responses=3,my_max_new_tokens=tokens_harm)
                 if len(model_preds) >= 1:
                     up["model_response1"] = model_preds[0]
                 if len(model_preds) >= 2:
