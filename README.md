@@ -1,0 +1,138 @@
+<div align=center>
+</div> 
+<h2 align="center">
+<a href="https://arxiv.org/abs/2502.12520"><img src="assets/logo.png" alt="SafeEraser Logo" width="20" style="vertical-align: middle; margin-right: 20px;">SafeEraser: Enhancing Safety in Multimodal Large Language Models through Multimodal Machine Unlearning
+</a></h2>
+    
+</h5>
+
+<h5 align=center>
+
+[![Dataset](https://img.shields.io/badge/Dataset-SafeEraser-green.svg)](https://drive.google.com/file/d/1DxcqHMT-LuCAoaJkF1UfCphPbbuUHlQq/view?usp=share_link)
+[![arXiv](https://img.shields.io/badge/Arxiv-2502.12520-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2502.12520)
+</h5>
+
+
+<div align="center">
+
+
+</div>
+
+## Abstract
+As Multimodal Large Language Models (MLLMs) develop, their potential security issues have become increasingly prominent. Machine Unlearning (MU), as an effective strategy for forgetting specific knowledge in training data, has been widely used in privacy protection. However, MU for safety in MLLM has yet to be fully explored. To address this issue, we propose SAFEERASER, a safety unlearning benchmark for MLLMs, consisting of 3,000 images and 28.8K VQA pairs. We comprehensively evaluate unlearning methods from two perspectives: forget quality and model utility. Our findings show that existing MU methods struggle to maintain model performance while implementing the forget operation and often suffer from over-forgetting. Hence, we introduce Prompt Decouple (PD) Loss to alleviate over-forgetting through decouple prompt during unlearning process. To quantitatively measure over-forgetting mitigated by PD Loss, we propose a new metric called Safe Answer Refusal Rate (SARR). Experimental results demonstrate that combining PD Loss with existing unlearning methods can effectively prevent over-forgetting and achieve a decrease of 79.5% in the SARR metric of LLaVA-7B and LLaVA-13B, while maintaining forget quality and model utility.
+
+![overview](assets/main1.png)
+
+## 🔥 News
+* **[2025.05.16]** 🎉🎉🎉Our paper is accepted by ACL Findings 2025!
+* **[2025.02.25]** We release the [paper](https://arxiv.org/abs/2502.12520) of our project.
+
+## <img src="assets/logo.png" alt="SafeEraser Logo" width="20" style="vertical-align: middle; margin-right: 20px;">SafeEraser Dataset
+
+You can download our dataset in this [link](https://drive.google.com/file/d/1DxcqHMT-LuCAoaJkF1UfCphPbbuUHlQq/view?usp=share_link). SafeEraser is a safety unlearning benchmark for MLLMs, consisting of 3,000 images and 28.8K VQA pairs.
+
+## Unlearning Pipeline
+
+###  Install
+
+1. Install the package.
+```
+conda create -n safeeraser python=3.10 -y
+conda activate safeeraser
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install flash-attn==2.5.8 --no-build-isolation
+```
+
+2. FlashAttention is installed separately after PyTorch so its CUDA extension
+can build correctly. This repository is not a Python package, so no editable
+installation (`pip install -e`) is required.
+
+### Preparation for unlearning
+
+1. Download SafeEraser from [here](https://drive.google.com/file/d/1DxcqHMT-LuCAoaJkF1UfCphPbbuUHlQq/view?usp=share_link), and then:
+
+```
+unzip safeeraser_dataset.zip
+```
+
+Please make sure the dataset is placed in the `dataset` folder.
+
+The dataset is intentionally excluded from Git because it is large. After
+cloning this repository on a cloud server, the expected layout is:
+```
+dataset/
+  all_train.json
+  all_val.json
+  prompt.json
+  img/
+  pdset/
+```
+### Unlearning
+
+1. Unlearning your model on SafeEraser.
+```
+bash scripts/forget_lora.bash
+```
+**Note:** You can modify the configuration files at `config/forget_lora.yaml` and `config/accelerate_config.yaml`.
+
+To deterministically train on 50% of the `violence` records only, run GA or GD:
+```
+bash scripts/run_violence_half.bash ga
+bash scripts/run_violence_half.bash gd
+```
+
+Unlike other unlearning benchmarks, our approach does not require fine-tuning the model beforehand. Instead, we directly perform unlearning on the vanilla (pretrained) model.
+
+2. Inference with the unlearned model. 
+
+Once you have obtained your unlearned model, you can evaluate its performance by running inference on both `all_train.json` and `all_val.json`. Use the following command:
+
+```
+python ckpt_infer.py \
+  --eval_file PATH_TO_YOUR_JSON_FILE \
+  --model_path llava-hf/llava-1.5-7b-hf \
+  --output_file PATH_TO_YOUR_RESULTS \
+  --checkpoint_path PATH_TO_YOUR_CKPT \
+  --loss_type ga
+```
+
+• --eval_file: Path to the evaluation file (e.g., all_train.json or all_val.json)  
+• --model_path: Hugging Face model path (default: llava-hf/llava-1.5-7b-hf)  
+• --output_file: Path to save the generated predictions  
+• --checkpoint_path: Path to the LoRA weights (i.e., the unlearned checkpoint)  
+• --loss_type: The unlearning method used (e.g., ga, gd, kl, po, gapd, gdpd, etc.)  
+
+3. Prepare results for offline evaluation (no API key or network request).
+
+Run:
+```
+python eval_all.py \
+  --input_file PATH_TO_JSON \
+  --output_file_rr ./results/all_train_predictions.json \
+  --file_refer dataset/all_train.json
+```
+• --input_file: Path to the input JSON file generated by `ckpt_infer.py`.  
+• --output_file_rr: Path to save predictions annotated with offline ROUGE-L.  
+• --file_refer: Path to `all_train.json` or `all_val.json`
+
+The command also writes `*.summary.json` and `*.manual.jsonl`. The JSONL file
+contains the generated answers and empty label fields for local/manual ASR, RR,
+SARR and semantic evaluation. These metrics are intentionally not computed by
+this repository because the evaluation path performs no external API calls.
+
+For `Specificity`, we evaluate the unlearned model on GQA, VisWiz, SQA, VQA, POPE, Mm-Vet, and MMB, and report the average score. To compute these metrics, you can refer to the original repository.
+
+## Acknowledgement
+We are highly inspired by: [FIUBench](https://github.com/SaFoLab-WISC/FIUBench/tree/main).
+
+## Citation
+If you find our codebase and dataset beneficial, please cite our work:
+```
+@article{chen2025safeeraser,
+  title={Safeeraser: Enhancing safety in multimodal large language models through multimodal machine unlearning},
+  author={Chen, Junkai and Deng, Zhijie and Zheng, Kening and Yan, Yibo and Liu, Shuliang and Wu, PeiJun and Jiang, Peijie and Liu, Jia and Hu, Xuming},
+  journal={arXiv preprint arXiv:2502.12520},
+  year={2025}
+}
+```
