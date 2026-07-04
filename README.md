@@ -35,7 +35,16 @@ You can download our dataset in this [link](https://drive.google.com/file/d/1Dxc
 
 ###  Install
 
-1. Install the package.
+1. Clone the repository with Git LFS enabled. Git LFS is required because the
+dataset images and JSON files are versioned as LFS objects.
+```
+git lfs install
+git clone https://github.com/wangku0/baselines.git
+cd baselines
+git lfs pull
+```
+
+2. Install the Python dependencies.
 ```
 conda create -n safeeraser python=3.10 -y
 conda activate safeeraser
@@ -44,7 +53,7 @@ pip install -r requirements.txt
 pip install flash-attn==2.5.8 --no-build-isolation
 ```
 
-2. FlashAttention is installed separately after PyTorch so its CUDA extension
+3. FlashAttention is installed separately after PyTorch so its CUDA extension
 can build correctly. This repository is not a Python package, so no editable
 installation (`pip install -e`) is required.
 
