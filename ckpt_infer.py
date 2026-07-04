@@ -9,7 +9,7 @@ from transformers import LlavaForConditionalGeneration
 import argparse
 from peft import LoraConfig, get_peft_model
 from conversation import conv_templates  
-from utils import resolve_dataset_path
+from utils import get_attn_implementation, resolve_dataset_path
 
 random.seed(233)
 
@@ -26,7 +26,7 @@ def main(args):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     model = LlavaForConditionalGeneration.from_pretrained(
         model_path,
-        attn_implementation="flash_attention_2",
+        attn_implementation=get_attn_implementation(),
         torch_dtype=torch.float16
     )
     image_processor = CLIPImageProcessor.from_pretrained(

@@ -3,6 +3,7 @@ import copy
 import numpy as np
 import torch
 from pathlib import Path
+from importlib.util import find_spec
 
 
 def resolve_dataset_path(value, dataset_root="dataset"):
@@ -17,6 +18,13 @@ def resolve_dataset_path(value, dataset_root="dataset"):
         return str(dataset_path)
     # Return the expected location so downstream errors show a useful path.
     return str(dataset_path)
+
+
+def get_attn_implementation():
+    """Use FlashAttention 2 when installed, otherwise use PyTorch SDPA."""
+    implementation = "flash_attention_2" if find_spec("flash_attn") else "sdpa"
+    print(f"Attention implementation: {implementation}")
+    return implementation
 
 def get_model_identifiers_from_yaml(model_family):
     #path is model_configs.yaml

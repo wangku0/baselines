@@ -50,11 +50,13 @@ conda create -n safeeraser python=3.10 -y
 conda activate safeeraser
 pip install --upgrade pip
 pip install -r requirements.txt
+# Optional performance optimization on supported CUDA systems:
 pip install flash-attn==2.5.8 --no-build-isolation
 ```
 
-3. FlashAttention is installed separately after PyTorch so its CUDA extension
-can build correctly. This repository is not a Python package, so no editable
+3. FlashAttention is optional and is installed separately after PyTorch so its
+CUDA extension can build correctly. If it is unavailable, the code automatically
+uses PyTorch SDPA. This repository is not a Python package, so no editable
 installation (`pip install -e`) is required.
 
 ### Preparation for unlearning
