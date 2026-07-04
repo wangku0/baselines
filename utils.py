@@ -2,6 +2,21 @@ import yaml
 import copy
 import numpy as np
 import torch
+from pathlib import Path
+
+
+def resolve_dataset_path(value, dataset_root="dataset"):
+    """Resolve paths stored relative to either the repo or dataset directory."""
+    if not value:
+        return None
+    path = Path(value)
+    if path.exists():
+        return str(path)
+    dataset_path = Path(dataset_root) / path
+    if dataset_path.exists():
+        return str(dataset_path)
+    # Return the expected location so downstream errors show a useful path.
+    return str(dataset_path)
 
 def get_model_identifiers_from_yaml(model_family):
     #path is model_configs.yaml

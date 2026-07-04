@@ -9,6 +9,7 @@ from transformers import LlavaForConditionalGeneration
 import argparse
 from peft import LoraConfig, get_peft_model
 from conversation import conv_templates  
+from utils import resolve_dataset_path
 
 random.seed(233)
 
@@ -103,7 +104,7 @@ def main(args):
         return all_predictions
 
     for line in tqdm(data):
-        sd_image_path = line.get("SDImage_path", None)
+        sd_image_path = resolve_dataset_path(line.get("SDImage_path"))
         if sd_image_path and os.path.exists(sd_image_path):
             sd_image = Image.open(sd_image_path).convert('RGB')
             sd_image_tensor = image_processor.preprocess(
@@ -114,7 +115,9 @@ def main(args):
             sd_image_tensor = None
 
 
-        image_id_path = line.get("image_path", None)
+        image_id_path = resolve_dataset_path(
+            line.get("image_path") or line.get("image_id")
+        )
         if image_id_path and os.path.exists(image_id_path):
             id_image = Image.open(image_id_path).convert('RGB')
             id_image_tensor = image_processor.preprocess(
@@ -127,6 +130,9 @@ def main(args):
         output_line = {}
         for k, v in line.items():
             output_line[k] = v
+        output_line["image_path"] = image_id_path
+        if sd_image_path:
+            output_line["SDImage_path"] = sd_image_path
 
         unsafe_pairs = output_line.get("unsafe_pairs", [])
         if sd_image_tensor is not None:

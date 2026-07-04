@@ -10,7 +10,7 @@ def is_violence(item):
     explicit_category = str(item.get("category", "")).strip().lower()
     if explicit_category:
         return explicit_category == "violence"
-    image_path = Path(str(item.get("image_path", "")))
+    image_path = Path(str(item.get("image_path") or item.get("image_id", "")))
     return any(part.lower() == "violence" for part in image_path.parts)
 
 

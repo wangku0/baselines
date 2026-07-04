@@ -2,8 +2,8 @@
 __pycache__/
 *.py[cod]
 
-# Downloaded datasets and generated subsets
-dataset/
+# Generated dataset subsets (the source dataset is versioned for clone-and-run)
+dataset/violence_half_train.json
 
 # Model checkpoints and evaluation outputs
 ckpt_results/

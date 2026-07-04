@@ -12,7 +12,7 @@ import datasets
 from PIL import Image
 import transformers
 import glob
-from utils import get_model_identifiers_from_yaml
+from utils import get_model_identifiers_from_yaml, resolve_dataset_path
 import random
 
 def preprocess_v1(tokenizer, input_ids, conversation, roles, ignore_index=-100):
@@ -86,7 +86,13 @@ class MMForgetDatasetQA(Dataset):
             harm_queries = [pair["question"] for pair in data["unsafe_pairs"]]
             harm_answers = [pair["model_response"] for pair in data["unsafe_pairs"]]
             
-            image_path = data["image_path"]
+            image_path = resolve_dataset_path(
+                data.get("image_path") or data.get("image_id")
+            )
+            if not image_path or not os.path.exists(image_path):
+                raise FileNotFoundError(
+                    f"Image not found for dataset record: {image_path}"
+                )
 
             for query, answer in zip(harm_queries, harm_answers):
                 self.forget_data.append({
@@ -95,7 +101,9 @@ class MMForgetDatasetQA(Dataset):
                     "image_path": image_path
                 })
             if config.forget_loss.endswith("pd"):
-                SDImage_path = data["SDImage_path"]
+                SDImage_path = resolve_dataset_path(data["SDImage_path"])
+                if not os.path.exists(SDImage_path):
+                    raise FileNotFoundError(f"SD image not found: {SDImage_path}")
                 #normal_question = [pair["sd_question"] for pair in data["unsafe_pairs"]]
                 normal_answers = [pair["sd_response"] for pair in data["unsafe_pairs"]]
                 for query, answer in zip(harm_queries, normal_answers):

@@ -58,8 +58,7 @@ unzip safeeraser_dataset.zip
 
 Please make sure the dataset is placed in the `dataset` folder.
 
-The dataset is intentionally excluded from Git because it is large. After
-cloning this repository on a cloud server, the expected layout is:
+The dataset is included in this repository. After cloning, the expected layout is:
 ```
 dataset/
   all_train.json
