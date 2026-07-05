@@ -51,9 +51,26 @@ def main(args):
             task_type="CAUSAL_LM"
         )
         model = get_peft_model(model, config)
-        model.load_state_dict(
-            torch.load(args.checkpoint_path, map_location="cpu"),
-            strict=False
+        checkpoint = torch.load(args.checkpoint_path, map_location="cpu")
+        if not isinstance(checkpoint, dict):
+            raise TypeError(
+                f"Expected a state-dict checkpoint at {args.checkpoint_path}, "
+                f"got {type(checkpoint).__name__}"
+            )
+        model_keys = set(model.state_dict())
+        matched_keys = model_keys.intersection(checkpoint)
+        matched_lora_keys = [key for key in matched_keys if "lora_" in key]
+        if not matched_lora_keys:
+            sample_keys = list(checkpoint)[:5]
+            raise RuntimeError(
+                "The checkpoint did not match any LoRA parameters in the "
+                f"inference model. Sample checkpoint keys: {sample_keys}"
+            )
+        incompatible = model.load_state_dict(checkpoint, strict=False)
+        print(
+            f"Loaded {len(matched_keys)}/{len(checkpoint)} checkpoint tensors "
+            f"({len(matched_lora_keys)} LoRA tensors); "
+            f"unexpected={len(incompatible.unexpected_keys)}"
         )
         model = model.merge_and_unload()
 
