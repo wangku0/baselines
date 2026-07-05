@@ -21,8 +21,21 @@ def resolve_dataset_path(value, dataset_root="dataset"):
 
 
 def get_attn_implementation():
-    """Use FlashAttention 2 when installed, otherwise use PyTorch SDPA."""
-    implementation = "flash_attention_2" if find_spec("flash_attn") else "sdpa"
+    """Use FlashAttention 2 only when installed on an Ampere-or-newer GPU."""
+    flash_installed = find_spec("flash_attn") is not None
+    flash_gpu_supported = False
+    if torch.cuda.is_available():
+        flash_gpu_supported = all(
+            torch.cuda.get_device_capability(index)[0] >= 8
+            for index in range(torch.cuda.device_count())
+        )
+    implementation = (
+        "flash_attention_2"
+        if flash_installed and flash_gpu_supported
+        else "sdpa"
+    )
+    if flash_installed and not flash_gpu_supported:
+        print("FlashAttention 2 is installed but the visible GPU is pre-Ampere; using SDPA.")
     print(f"Attention implementation: {implementation}")
     return implementation
 
