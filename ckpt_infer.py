@@ -16,10 +16,10 @@ def main(args):
     file = args.eval_file
     model_path = args.model_path
     output_file = args.output_file
-    tokens_text=512
-    tokens_image=512
-    tokens_sd=512
-    tokens_harm=512
+    tokens_text = args.max_new_tokens
+    tokens_image = args.max_new_tokens
+    tokens_sd = args.max_new_tokens
+    tokens_harm = args.max_new_tokens
 
 
     processor = AutoProcessor.from_pretrained(model_path)
@@ -236,6 +236,12 @@ if __name__ == "__main__":
         "--max_memory_per_gpu",
         default=None,
         help="optional per-GPU limit used by device_map=auto, e.g. 13GiB",
+    )
+    parser.add_argument(
+        "--max_new_tokens",
+        type=int,
+        default=256,
+        help="maximum generated tokens per response (default: 256)",
     )
     args = parser.parse_args()
     main(args)

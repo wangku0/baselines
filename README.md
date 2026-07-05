@@ -139,8 +139,13 @@ CUDA_VISIBLE_DEVICES=0,1 python ckpt_infer.py \
   --model_path llava-hf/llava-1.5-7b-hf \
   --output_file results/base_violence_half_predictions.json \
   --device_map auto \
-  --max_memory_per_gpu 13GiB
+  --max_memory_per_gpu 13GiB \
+  --max_new_tokens 256
 ```
+
+LLaVA-1.5 uses a fixed 336x336 CLIP vision tower, so the Qwen2-VL-style
+`max_pixels=50176` setting is not applicable without changing/interpolating the
+vision model's positional embeddings. Generation is capped at 256 new tokens.
 
 For `Specificity`, we evaluate the unlearned model on GQA, VisWiz, SQA, VQA, POPE, Mm-Vet, and MMB, and report the average score. To compute these metrics, you can refer to the original repository.
 
