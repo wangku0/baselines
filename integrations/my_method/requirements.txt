@@ -1,0 +1,16 @@
+torch
+torchvision
+transformers
+accelerate
+pillow
+numpy
+pandas
+scikit-learn
+matplotlib
+tqdm
+pyyaml
+scipy
+qwen-vl-utils
+safetensors
+einops
+peft
