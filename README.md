@@ -113,6 +113,32 @@ python ckpt_infer.py \
 • --checkpoint_path: Path to the LoRA weights (i.e., the unlearned checkpoint)  
 • --loss_type: The unlearning method used (e.g., ga, gd, kl, po, gapd, gdpd, etc.)  
 
+### Optional: 4-bit QLoRA on two T4 GPUs
+
+The default training path remains FP16. To reduce per-GPU memory on two 16 GB
+T4 GPUs, launch the same LoRA objective with a 4-bit NF4 frozen base model:
+
+```
+CUDA_VISIBLE_DEVICES=0,1 \
+MPLBACKEND=Agg \
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+accelerate launch \
+  --config_file config/accelerate_qlora.yaml \
+  --main_process_port 2216 \
+  forget.py \
+  --config-name forget_lora \
+  forget_loss=idk \
+  load_in_4bit=true \
+  data_path=dataset/violence_test_50.json \
+  split=violence_50_qlora
+```
+
+QLoRA uses ordinary two-process GPU data parallelism; each T4 holds a 4-bit
+copy of the frozen base model. Gradient checkpointing is enabled only for this
+mode. The saved file is still a regular LoRA/projector `checkpoint.pt`, so
+`ckpt_infer.py` loads and merges it into the normal FP16 LLaVA base model. Use
+a distinct `split` suffix such as `_qlora` to avoid overwriting an FP16 run.
+
 3. Evaluate results locally with LLaMA-Guard (no ChatGPT/OpenAI API key).
 
 Run:

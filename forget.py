@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from accelerate import Accelerator, DistributedType
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import transformers
 import os
 import matplotlib.pyplot as plt
@@ -37,6 +37,7 @@ from transformers import (
     set_seed, 
     LlavaForConditionalGeneration, 
     AutoProcessor,
+    BitsAndBytesConfig,
     CLIPImageProcessor,
     # MllamaForConditionalGeneration, 
     AutoProcessor
@@ -196,13 +197,53 @@ def main(cfg):
             OmegaConf.save(cfg, f)
             
     oracle_model, processor = None, None
+    load_in_4bit = bool(cfg.get("load_in_4bit", False))
+    if load_in_4bit and "kl" in cfg.forget_loss:
+        raise ValueError(
+            "4-bit QLoRA is not supported for KL losses because the oracle "
+            "model would require a separate full model. Use idk/ga/gd instead."
+        )
+    model_load_kwargs = {
+        "attn_implementation": get_attn_implementation(),
+        "torch_dtype": torch.float16,
+    }
+    if load_in_4bit:
+        compute_dtype_name = str(cfg.get("bnb_4bit_compute_dtype", "float16"))
+        compute_dtype = {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+        }.get(compute_dtype_name.lower())
+        if compute_dtype is None:
+            raise ValueError(
+                "bnb_4bit_compute_dtype must be float16/fp16/bfloat16/bf16"
+            )
+        model_load_kwargs.update(
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type=str(cfg.get("bnb_4bit_quant_type", "nf4")),
+                bnb_4bit_use_double_quant=bool(
+                    cfg.get("bnb_4bit_use_double_quant", True)
+                ),
+                bnb_4bit_compute_dtype=compute_dtype,
+                # Keep multimodal components in a normal floating-point dtype.
+                llm_int8_skip_modules=["vision_tower", "multi_modal_projector"],
+            ),
+            device_map={"": accelerator.local_process_index},
+        )
+        accelerator.print(
+            "Training mode: 4-bit QLoRA "
+            f"(device cuda:{accelerator.local_process_index}, "
+            f"compute dtype {compute_dtype})"
+        )
+
     if "llava" in cfg.model_path:
         image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
         tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
         model = LlavaForConditionalGeneration.from_pretrained(
             cfg.model_path,
-            attn_implementation=get_attn_implementation(),
-            torch_dtype=torch.float16,
+            **model_load_kwargs,
         )
         if  "kl" in cfg.forget_loss:
             oracle_model = LlavaForConditionalGeneration.from_pretrained(
@@ -225,6 +266,12 @@ def main(cfg):
             target_modules=r'.*language_model.*\.(up_proj|k_proj|down_proj|v_proj|q_proj|o_proj|gate_proj)'
 
     if cfg.LoRA.r != 0:
+        if load_in_4bit:
+            model = prepare_model_for_kbit_training(
+                model,
+                use_gradient_checkpointing=True,
+            )
+            model.config.use_cache = False
         config = LoraConfig(
             r=cfg.LoRA.r, 
             lora_alpha=cfg.LoRA.alpha, 

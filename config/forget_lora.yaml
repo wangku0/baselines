@@ -13,6 +13,10 @@ gradient_accumulation_steps: 16
 num_epochs: 10
 forget_loss: ga
 # support ga, gd, kl, po, gapd, gdpd, klpd and popd.
+load_in_4bit: false
+bnb_4bit_quant_type: nf4
+bnb_4bit_use_double_quant: true
+bnb_4bit_compute_dtype: float16
 tune_vision_tower: False
 tune_mm_projector: True
 tune_language_model: False
