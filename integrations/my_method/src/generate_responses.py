@@ -216,10 +216,12 @@ def ensure_generation_files(
             expected_count = max_samples
             if expected_count is None:
                 expected_count = len(load_dataset(config, split=split))
-            if not _existing_matches_source(path, response_source, expected_count):
+            stored_source = "generated" if response_source == "generate" else "dataset"
+            if not _existing_matches_source(path, stored_source, expected_count):
                 raise ValueError(
                     f"Existing generations file for split={split} does not match "
-                    f"response_source={response_source!r} or has fewer than "
+                    f"response_source={response_source!r} (stored as {stored_source!r}) "
+                    f"or has fewer than "
                     f"{expected_count} records: {path}. Rerun without "
                     "--skip_generation to rebuild it from the configured source."
                 )
