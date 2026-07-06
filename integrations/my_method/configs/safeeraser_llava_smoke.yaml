@@ -1,0 +1,31 @@
+# Two-record end-to-end smoke test. Values not listed here are inherited from
+# safeeraser_llava.yaml, including stage2.response_source: generate.
+base_config: safeeraser_llava.yaml
+
+dataset:
+  train_file: "integrations/my_method/outputs/data/violence_2_paired_train.json"
+  val_file: "integrations/my_method/outputs/data/violence_2_paired_train.json"
+
+risk_space:
+  k: 2
+
+stage1_5:
+  k_values: [1, 2]
+
+stage2:
+  response_source: "generate"
+  generation:
+    model_path: "llava-hf/llava-1.5-7b-hf"
+    max_new_tokens: 256
+    do_sample: false
+
+flow_matching:
+  teacher:
+    batch_size: 2
+    steps: 10
+    eval_every: 5
+    save_every: 10
+
+stage3:
+  evaluation:
+    generate_after_training: false

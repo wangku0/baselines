@@ -10,6 +10,7 @@ matplotlib
 tqdm
 pyyaml
 scipy
+rouge_score
 qwen-vl-utils
 safetensors
 einops

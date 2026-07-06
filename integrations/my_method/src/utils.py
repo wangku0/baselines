@@ -54,6 +54,16 @@ def setup_logger(name: str = LOGGER_NAME, level: int = logging.INFO) -> logging.
 logger = setup_logger()
 
 
+def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
@@ -62,6 +72,14 @@ def load_config(config_path: str) -> Dict[str, Any]:
         config = yaml.safe_load(f)
     if not isinstance(config, dict):
         raise ValueError(f"Config must be a YAML mapping: {path}")
+    base_config = config.pop("base_config", None)
+    if base_config:
+        base_path = Path(str(base_config)).expanduser()
+        if not base_path.is_absolute():
+            base_path = path.parent / base_path
+        base = load_config(str(base_path))
+        base.pop("_config_path", None)
+        config = _deep_merge(base, config)
     config["_config_path"] = str(path)
     return config
 

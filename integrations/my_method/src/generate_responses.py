@@ -213,6 +213,16 @@ def ensure_generation_files(
         if skip_generation:
             if not path.exists():
                 raise FileNotFoundError(f"Missing generations file for split={split}: {path}")
+            expected_count = max_samples
+            if expected_count is None:
+                expected_count = len(load_dataset(config, split=split))
+            if not _existing_matches_source(path, response_source, expected_count):
+                raise ValueError(
+                    f"Existing generations file for split={split} does not match "
+                    f"response_source={response_source!r} or has fewer than "
+                    f"{expected_count} records: {path}. Rerun without "
+                    "--skip_generation to rebuild it from the configured source."
+                )
             paths[split] = path
         elif response_source == "dataset":
             paths[split] = load_dataset_responses_for_split(

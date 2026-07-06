@@ -46,6 +46,31 @@ This selects records from `dataset/all_train.json` using the same deterministic
 half-sampling rule, then joins `dataset/paired/all_train.json` by `image_id`.
 It writes only under `integrations/my_method/outputs/data/`.
 
+Prepare the matching 50-record Violence validation subset from SafeEraser's
+`dataset/all_val.json` and `dataset/paired/all_val.json`:
+
+```bash
+python integrations/my_method/scripts/prepare_safeeraser_val_data.py \
+  --seed 233 \
+  --records 50
+```
+
+This writes `violence_50_paired_val.json` for my_method hidden-state/risk
+evaluation and `violence_50_val_eval.json` for unchanged SafeEraser inference.
+Both files contain the same image IDs in the same order.
+
+For a two-record end-to-end smoke test, use the checked-in inherited config:
+
+```bash
+python integrations/my_method/scripts/prepare_safeeraser_data.py --seed 233 --records 2
+CFG=integrations/my_method/configs/safeeraser_llava_smoke.yaml
+```
+
+The smoke config inherits the production LLaVA settings, keeps
+`stage2.response_source: generate`, uses the two-record paired train file for
+both splits, reduces the risk-space sweep to k=1/2 and trains the Flow teacher
+for 10 steps.
+
 ## 2. Build the LLaVA risk space
 
 ```bash
@@ -58,12 +83,18 @@ $PY integrations/my_method/scripts/02_build_risk_space.py --config $CFG
 $PY integrations/my_method/scripts/03_evaluate_risk_space.py --config $CFG --split train
 $PY integrations/my_method/scripts/03_evaluate_risk_space.py --config $CFG --split val
 $PY integrations/my_method/scripts/04_stage1_5_analysis.py --config $CFG
+$PY integrations/my_method/scripts/00_generate_stage2_base_responses.py --config $CFG --split both --force
 $PY integrations/my_method/scripts/05_stage2_risk_evaluation.py --config $CFG --split both --skip_generation
 $PY integrations/my_method/scripts/06_stage2_5_train_flow_matching.py --config $CFG --split train
 ```
 
-The existing Qwen risk artifacts are not compatible with LLaVA. These commands
-create an isolated LLaVA risk basis, selected layers and frozen normalization.
+The dedicated Stage 2 generation command creates fresh Base LLaVA responses
+for harmful, safe-neighbor and retain prompts. Because those JSONL files then
+exist, Stage 2 can either reuse them automatically or be run with
+`--skip_generation` for a strict no-regeneration check before applying the
+SafeEraser-aligned local LLaMA-Guard classifier. The existing Qwen risk
+artifacts are not compatible with LLaVA; these commands create an isolated
+LLaVA risk basis, selected layers and frozen normalization.
 
 ## 3. Train my_method
 

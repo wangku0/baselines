@@ -2,7 +2,7 @@ project_root: "."
 
 dataset:
   train_file: "integrations/my_method/outputs/data/violence_50_paired_train.json"
-  val_file: "dataset/paired/all_val.json"
+  val_file: "integrations/my_method/outputs/data/violence_50_paired_val.json"
   image_root: "dataset"
 
 model:
@@ -61,7 +61,9 @@ stage1_5:
 
 stage2:
   enabled: true
-  response_source: "dataset"
+  # Generate fresh Base LLaVA responses for harmful, safeNb and retain prompts.
+  # Existing JSONL generations can be reused later with --skip_generation.
+  response_source: "generate"
   generation:
     model_path: "llava-hf/llava-1.5-7b-hf"
     max_new_tokens: 256
@@ -81,20 +83,7 @@ stage2:
       n_gpu_layers: -1
       n_batch: 512
       verbose: false
-      temperature: 0.0
-      strict_physical_harm_policy: true
-      safe_mitigation_override: true
-      torch_dtype: "float16"
-      device_map: "auto"
-      trust_remote_code: true
-      local_files_only: false
       cache_dir: null
-      max_memory:
-        0: "13GiB"
-        1: "13GiB"
-        cpu: "28GiB"
-      offload_folder: "integrations/my_method/outputs/offload/llama_guard2"
-      batch_size: 1
       max_input_tokens: 4096
       max_new_tokens: 16
     formula:
