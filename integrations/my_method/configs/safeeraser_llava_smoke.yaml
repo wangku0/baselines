@@ -4,7 +4,7 @@ base_config: safeeraser_llava.yaml
 
 dataset:
   train_file: "integrations/my_method/outputs/data/violence_2_paired_train.json"
-  val_file: "integrations/my_method/outputs/data/violence_2_paired_train.json"
+  val_file: "integrations/my_method/outputs/data/violence_2_paired_val.json"
 
 risk_space:
   k: 2
