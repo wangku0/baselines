@@ -15,6 +15,48 @@ def run(command: list[str], cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def load_list(path: Path) -> list[dict]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, list):
+        raise ValueError(f"Expected JSON list: {path}")
+    return value
+
+
+def infer_paired_eval_file(eval_file: Path) -> Path | None:
+    name = eval_file.name
+    candidates = []
+    if "_val_eval" in name:
+        candidates.append(eval_file.with_name(name.replace("_val_eval", "_paired_val")))
+    if "_eval" in name:
+        candidates.append(eval_file.with_name(name.replace("_eval", "_paired")))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def enriched_eval_file(eval_file: Path, paired_eval_file: Path | None, output_dir: Path, method_name: str) -> Path:
+    if paired_eval_file is None:
+        inferred = infer_paired_eval_file(eval_file)
+        paired_eval_file = inferred
+    if paired_eval_file is None or not paired_eval_file.exists():
+        return eval_file
+    raw_rows = load_list(eval_file)
+    paired_rows = load_list(paired_eval_file)
+    paired_by_id = {row.get("image_id"): row for row in paired_rows}
+    enriched = []
+    for row in raw_rows:
+        merged = dict(row)
+        pair_row = paired_by_id.get(row.get("image_id"))
+        if pair_row is not None and isinstance(pair_row.get("safeNb_pairs"), list):
+            merged["safeNb_pairs"] = pair_row["safeNb_pairs"]
+        enriched.append(merged)
+    path = output_dir / f"{method_name}_eval_with_safenb.json"
+    path.write_text(json.dumps(enriched, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Prepared SafeEraser eval input with safeNb_pairs: {path}")
+    return path
+
+
 def validate_predictions(path: Path, expected_records: int) -> dict:
     rows = json.loads(path.read_text(encoding="utf-8"))
     harmful = sum(
@@ -33,17 +75,25 @@ def validate_predictions(path: Path, expected_records: int) -> dict:
         for row in rows
         for key in ("UnharmPair_text1", "UnharmPair_text2", "UnharmPair_image1", "UnharmPair_image2")
     )
+    safe_nb_pairs = sum(len(row.get("safeNb_pairs") or []) for row in rows)
+    safe_nb = sum(
+        int(bool(pair.get("model_response1")))
+        for row in rows
+        for pair in row.get("safeNb_pairs", [])
+    )
     expected = {
         "records": expected_records,
         "harmful_responses": expected_records * 4 * 3,
         "sd_responses": expected_records * 4,
         "retain_responses": expected_records * 4,
+        "safeNb_responses": safe_nb_pairs,
     }
     actual = {
         "records": len(rows),
         "harmful_responses": harmful,
         "sd_responses": sd,
         "retain_responses": retain,
+        "safeNb_responses": safe_nb,
     }
     if actual != expected:
         raise RuntimeError(f"SafeEraser prediction contract failed: expected={expected}, actual={actual}")
@@ -67,6 +117,12 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--llama-guard-model-path", default=None)
     parser.add_argument("--llama-guard-cache-dir", default=None)
+    parser.add_argument(
+        "--paired-eval-file",
+        type=Path,
+        default=None,
+        help="Optional paired JSON containing safeNb_pairs. If omitted, inferred from --eval-file when possible.",
+    )
     parser.add_argument("--skip-inference", action="store_true")
     args = parser.parse_args()
 
@@ -76,6 +132,7 @@ def main() -> None:
     env = dict(os.environ)
     env.setdefault("CUDA_VISIBLE_DEVICES", "0,1")
     env.setdefault("MPLBACKEND", "Agg")
+    eval_input = enriched_eval_file(Path(args.eval_file).resolve(), args.paired_eval_file, args.output_dir, args.method_name)
 
     if not args.skip_inference:
         run(
@@ -83,7 +140,7 @@ def main() -> None:
                 args.python,
                 "ckpt_infer.py",
                 "--eval_file",
-                str(Path(args.eval_file).resolve()),
+                str(eval_input.resolve()),
                 "--model_path",
                 args.model_path,
                 "--output_file",
@@ -106,7 +163,7 @@ def main() -> None:
         "--output_file_rr",
         str(evaluated),
         "--file_refer",
-        str(Path(args.eval_file).resolve()),
+        str(eval_input.resolve()),
         "--n_gpu_layers",
         "-1",
     ]

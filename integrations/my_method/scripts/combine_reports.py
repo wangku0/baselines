@@ -37,6 +37,7 @@ def main() -> None:
             "RR": safe.get("RR"),
             "SARR": safe.get("SARR"),
             "ROUGE-L": safe.get("average_rouge_l_fmeasure"),
+            "group_metrics": safe.get("group_metrics"),
             "counts": safe.get("counts"),
             "mode": safe.get("mode"),
         },

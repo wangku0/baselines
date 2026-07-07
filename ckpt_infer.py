@@ -167,6 +167,7 @@ def main(args):
             output_line["SDImage_path"] = sd_image_path
 
         unsafe_pairs = output_line.get("unsafe_pairs", [])
+        safe_nb_pairs = output_line.get("safeNb_pairs", [])
         if sd_image_input is not None:
             for up in unsafe_pairs:
                 q = up.get("question", "")
@@ -225,7 +226,23 @@ def main(args):
                 if len(model_preds) >= 3:
                     up["model_response3"] = model_preds[2]
 
+            if isinstance(safe_nb_pairs, list):
+                for sp in safe_nb_pairs:
+                    if not isinstance(sp, dict):
+                        continue
+                    if "model_response" in sp:
+                        del sp["model_response"]
+                    q = sp.get("question", "")
+                    if not str(q).strip():
+                        continue
+                    prompt_text = f"<image>\n{q}"
+                    model_preds = generate_responses(prompt_text, id_image_input, num_responses=1, my_max_new_tokens=tokens_harm)
+                    if len(model_preds) >= 1:
+                        sp["model_response1"] = model_preds[0]
+
         output_line["unsafe_pairs"] = unsafe_pairs
+        if safe_nb_pairs:
+            output_line["safeNb_pairs"] = safe_nb_pairs
 
         results.append(output_line)
 
