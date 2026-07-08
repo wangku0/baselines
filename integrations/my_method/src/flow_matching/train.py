@@ -10,8 +10,9 @@ import yaml
 
 from ..risk_space.recommended_config import RecommendedRiskConfig
 from ..utils import ensure_dir, logger, resolve_path, save_json, set_seed
-from .features import build_flow_features
+from .features import _load_risk_basis, build_flow_features
 from .model import FlowVectorField, euler_integrate_flow_trainable
+from .utils import dynamic_implicit_risk_norm, load_stage2_implicit_normalization
 
 
 def _batch(examples, indices, device):
@@ -21,6 +22,30 @@ def _batch(examples, indices, device):
     layer = torch.tensor([int(examples[i]["layer"]) for i in indices], dtype=torch.long, device=device)
     kind = [examples[i]["kind"] for i in indices]
     return x0, x1, cond, layer, kind
+
+
+def _append_dynamic_risk_condition(
+    x: torch.Tensor,
+    cond_static: torch.Tensor,
+    layer: torch.Tensor,
+    recommended: RecommendedRiskConfig,
+    risk_basis: Dict[int, torch.Tensor],
+    safe_center: Dict[int, torch.Tensor],
+    lower: float,
+    upper: float,
+    clip: bool,
+) -> torch.Tensor:
+    r_imp_norm_t = dynamic_implicit_risk_norm(
+        x,
+        layer,
+        recommended,
+        risk_basis,
+        safe_center,
+        lower,
+        upper,
+        clip=clip,
+    )
+    return torch.cat([cond_static.to(x.dtype), r_imp_norm_t.to(x.dtype)], dim=-1)
 
 
 def train_flow_teacher(
@@ -41,6 +66,9 @@ def train_flow_teacher(
     data = torch.load(feature_path, map_location="cpu", weights_only=False)
     examples = data["examples"]
     rec = data["recommended"]
+    rec_cfg = RecommendedRiskConfig(**rec)
+    risk_basis, safe_center = _load_risk_basis(Path(rec_cfg.risk_basis_path))
+    lower, upper, norm_clip = load_stage2_implicit_normalization(config)
     teacher_cfg = flow_cfg.get("teacher", {})
     losses_cfg = flow_cfg.get("teacher_losses", {})
     hidden_dim = int(data["hidden_dim"])
@@ -71,11 +99,39 @@ def train_flow_teacher(
             t = torch.rand(x0.shape[0], 1, device=device_t)
             xt = (1 - t) * x0 + t * x1
             target_v = x1 - x0
-            pred_v = model(xt, t, cond, layer)
+            cond_t = _append_dynamic_risk_condition(
+                xt,
+                cond,
+                layer,
+                rec_cfg,
+                risk_basis,
+                safe_center,
+                lower,
+                upper,
+                norm_clip,
+            )
+            pred_v = model(xt, t, cond_t, layer)
             identity_mask = torch.tensor([k == "identity" for k in kind], device=device_t)
             pair_mask = ~identity_mask
             loss_velocity = F.mse_loss(pred_v[pair_mask], target_v[pair_mask]) if pair_mask.any() else pred_v.sum() * 0
-            xhat = euler_integrate_flow_trainable(model, x0, cond, layer_id=layer, steps=ode_steps)
+            xhat = euler_integrate_flow_trainable(
+                model,
+                x0,
+                cond,
+                layer_id=layer,
+                steps=ode_steps,
+                cond_fn=lambda x, _t, c, lid: _append_dynamic_risk_condition(
+                    x,
+                    c,
+                    lid if lid is not None else layer,
+                    rec_cfg,
+                    risk_basis,
+                    safe_center,
+                    lower,
+                    upper,
+                    norm_clip,
+                ),
+            )
             loss_endpoint = F.mse_loss(xhat[pair_mask], x1[pair_mask]) if pair_mask.any() else pred_v.sum() * 0
             loss_identity = (pred_v[identity_mask].pow(2).mean() + F.mse_loss(xhat[identity_mask], x0[identity_mask])) if identity_mask.any() else pred_v.sum() * 0
             loss = (
@@ -84,7 +140,15 @@ def train_flow_teacher(
                 + float(losses_cfg.get("identity_safe_retain", 0.5)) * loss_identity
             )
             if not torch.isfinite(loss):
-                torch.save({"x0": x0.detach().cpu(), "x1": x1.detach().cpu(), "cond": cond.detach().cpu()}, out_dir / "nan_batch_debug.pt")
+                torch.save(
+                    {
+                        "x0": x0.detach().cpu(),
+                        "x1": x1.detach().cpu(),
+                        "cond_static": cond.detach().cpu(),
+                        "cond_t": cond_t.detach().cpu(),
+                    },
+                    out_dir / "nan_batch_debug.pt",
+                )
                 raise RuntimeError("Flow teacher loss became NaN/Inf. Saved nan_batch_debug.pt")
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -117,6 +181,8 @@ def train_flow_teacher(
                 "recommended": rec,
                 "hidden_dim": hidden_dim,
                 "cond_dim": cond_dim,
+                "static_cond_dim": int(data.get("static_cond_dim", cond_dim - 1)),
+                "dynamic_conditioning": data.get("dynamic_conditioning"),
                 "flow_target": data.get("flow_target"),
                 "representation_pooling": data.get("representation_pooling"),
                 "requested_representation_pooling": data.get("requested_representation_pooling"),
@@ -134,6 +200,8 @@ def _save(model, out_dir: Path, data: Dict[str, Any], rec: Dict[str, Any], teach
             "state_dict": model.state_dict(),
             "hidden_dim": int(data["hidden_dim"]),
             "cond_dim": int(data["cond_dim"]),
+            "static_cond_dim": int(data.get("static_cond_dim", int(data["cond_dim"]) - 1)),
+            "dynamic_conditioning": data.get("dynamic_conditioning"),
             "recommended": rec,
             "teacher_cfg": dict(teacher_cfg),
             "flow_target": data.get("flow_target"),

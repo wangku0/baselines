@@ -10,7 +10,13 @@ from ..risk_space.recommended_config import RecommendedRiskConfig, load_recommen
 from ..stage3_losses import adapter_disabled, last_token_hidden, prepare_prompt_inputs
 from ..utils import resolve_path
 from .model import FlowVectorField, euler_integrate_flow
-from .utils import compute_risk_coefficients, compute_risk_delta_coefficients, lambda_flow_ramp
+from .utils import (
+    compute_risk_coefficients,
+    compute_risk_delta_coefficients,
+    dynamic_implicit_risk_norm,
+    lambda_flow_ramp,
+    load_stage2_implicit_normalization,
+)
 
 
 def load_flow_teacher(config: Dict[str, Any], device: torch.device) -> Optional[Dict[str, Any]]:
@@ -60,6 +66,29 @@ def _condition(x: torch.Tensor, coeff: torch.Tensor, r_explicit: float, group_id
     elif cond.numel() > cond_dim:
         cond = cond[:cond_dim]
     return cond
+
+
+def _append_dynamic_risk_condition(
+    x: torch.Tensor,
+    cond_static: torch.Tensor,
+    layer_id: torch.Tensor,
+    recommended: RecommendedRiskConfig,
+    risk_tensors: Dict[str, Dict[int, torch.Tensor]],
+    lower: float,
+    upper: float,
+    clip: bool,
+) -> torch.Tensor:
+    r_imp_norm_t = dynamic_implicit_risk_norm(
+        x,
+        layer_id,
+        recommended,
+        risk_tensors["risk_basis"],
+        risk_tensors["safe_center"],
+        lower,
+        upper,
+        clip=clip,
+    )
+    return torch.cat([cond_static.to(x.dtype), r_imp_norm_t.to(x.dtype)], dim=-1)
 
 
 def _target_mode(config: Dict[str, Any]) -> Dict[str, float | str]:
@@ -126,6 +155,9 @@ def compute_flow_stage3_losses(
     flow_cfg = config["stage3"]["flow_distillation"]
     teacher: FlowVectorField = flow_bundle["model"]
     cond_dim = int(flow_bundle["ckpt"]["cond_dim"])
+    dynamic_conditioning = flow_bundle.get("ckpt", {}).get("dynamic_conditioning") or {}
+    use_dynamic_r_imp = bool(dynamic_conditioning.get("R_imp_norm_t", False))
+    static_cond_dim = int(flow_bundle.get("ckpt", {}).get("static_cond_dim", cond_dim - 1 if use_dynamic_r_imp else cond_dim))
     device = next(teacher.parameters()).device
     max_pixels = config["stage3"].get("preprocessing", {}).get("max_pixels", 200704)
     lambda_flow = lambda_flow_ramp(
@@ -138,6 +170,10 @@ def compute_flow_stage3_losses(
     )
     lambda_identity = float(flow_cfg.get("lambda_identity", 0.5))
     ode_steps = int(flow_cfg.get("ode_steps", 8))
+    if use_dynamic_r_imp:
+        norm_lower, norm_upper, norm_clip = load_stage2_implicit_normalization(config)
+    else:
+        norm_lower, norm_upper, norm_clip = 0.0, 1.0, True
 
     harmful = triplet["harmful"]
     safe = triplet["safe"]
@@ -191,10 +227,29 @@ def compute_flow_stage3_losses(
             recommended,
             risk_tensors["risk_basis"],
         )[0].to(device)
-        cond = _condition(x_base, coeff, harmful.get("R_explicit", 0.0), 0, cond_dim)[None, :]
+        cond_static = _condition(x_base, coeff, harmful.get("R_explicit", 0.0), 0, static_cond_dim)[None, :]
         layer_id = torch.tensor([int(layer)], device=device)
         with torch.no_grad():
-            x_flow = euler_integrate_flow(teacher, x_base[None, :], cond, layer_id=layer_id, steps=ode_steps)[0]
+            if use_dynamic_r_imp:
+                x_flow = euler_integrate_flow(
+                    teacher,
+                    x_base[None, :],
+                    cond_static,
+                    layer_id=layer_id,
+                    steps=ode_steps,
+                    cond_fn=lambda x, _t, c, lid: _append_dynamic_risk_condition(
+                        x,
+                        c,
+                        lid if lid is not None else layer_id,
+                        recommended,
+                        risk_tensors,
+                        norm_lower,
+                        norm_upper,
+                        norm_clip,
+                    ),
+                )[0]
+            else:
+                x_flow = euler_integrate_flow(teacher, x_base[None, :], cond_static, layer_id=layer_id, steps=ode_steps)[0]
         delta_lora = x_lora - x_base.to(x_lora.device)
         delta_flow = x_flow.to(x_lora.device) - x_base.to(x_lora.device)
         delta_denom = delta_flow.detach().pow(2).mean().clamp_min(1e-6)

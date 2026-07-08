@@ -44,15 +44,19 @@ def _lora_tensor_stats(model) -> dict:
         "lora_abs_sum": 0.0,
         "lora_max_abs": 0.0,
         "active_adapters": None,
+        "adapter_status": "none",
     }
     active = getattr(model, "active_adapters", None)
     if callable(active):
         try:
             stats["active_adapters"] = list(active())
-        except TypeError:
+            stats["adapter_status"] = "loaded" if stats["active_adapters"] else "none"
+        except (TypeError, ValueError) as exc:
             stats["active_adapters"] = None
+            stats["adapter_status"] = f"unavailable: {exc}"
     elif active is not None:
         stats["active_adapters"] = list(active) if isinstance(active, (list, tuple)) else str(active)
+        stats["adapter_status"] = "loaded"
 
     for name, tensor in model.state_dict().items():
         if "lora_" not in name:

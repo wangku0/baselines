@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import warnings
+from pathlib import Path
 from typing import Dict, Optional
 
 import torch
 
 from ..risk_space.recommended_config import RecommendedRiskConfig
+from ..utils import resolve_path
 
 
 def response_mean_last_pool(
@@ -80,6 +83,58 @@ def compute_risk_delta_coefficients(
         raise ValueError(f"Risk basis for layer {layer} must be [k,D], got {tuple(basis.shape)}")
     k = min(int(recommended.recommended_k), basis.shape[0])
     return delta @ basis[:k].T
+
+
+def load_stage2_implicit_normalization(config: dict) -> tuple[float, float, bool]:
+    metrics_dir = config.get("stage2", {}).get("outputs", {}).get(
+        "metrics_dir", "integrations/my_method/outputs/metrics/stage2"
+    )
+    path = resolve_path(config, str(Path(metrics_dir) / "implicit_normalization.json"))
+    if not path.exists():
+        raise FileNotFoundError(f"Missing Stage 2 implicit normalization: {path}. Run Stage 2 first.")
+    data = json.load(path.open("r", encoding="utf-8"))
+    clip = bool(data.get("clip", True) or config.get("stage2", {}).get("normalization", {}).get("clip", True))
+    return float(data["lower_value"]), float(data["upper_value"]), clip
+
+
+def normalize_implicit_risk_value(raw: torch.Tensor, lower: float, upper: float, *, clip: bool = True) -> torch.Tensor:
+    norm = (raw - float(lower)) / max(float(upper) - float(lower), 1e-6)
+    if clip:
+        norm = torch.clamp(norm, 0.0, 1.0)
+    return norm
+
+
+def dynamic_implicit_risk_norm(
+    x: torch.Tensor,
+    layer_id: torch.Tensor,
+    recommended: RecommendedRiskConfig,
+    risk_basis: Dict[int, torch.Tensor],
+    safe_center: Optional[Dict[int, torch.Tensor]],
+    lower: float,
+    upper: float,
+    *,
+    clip: bool = True,
+) -> torch.Tensor:
+    """Return Stage2-normalized implicit risk for current flow states.
+
+    ``x`` is the current hidden state on the flow path, so this computes the
+    continuous R_imp(t) used to condition the velocity field.
+    """
+    if x.ndim != 2:
+        raise ValueError(f"dynamic_implicit_risk_norm expects x [B,D], got {tuple(x.shape)}")
+    layer_id = layer_id.to(device=x.device, dtype=torch.long).flatten()
+    if layer_id.numel() == 1 and x.shape[0] != 1:
+        layer_id = layer_id.expand(x.shape[0])
+    if layer_id.numel() != x.shape[0]:
+        raise ValueError(f"layer_id must have B entries, got B={x.shape[0]} layer_id={tuple(layer_id.shape)}")
+
+    out = torch.empty((x.shape[0], 1), device=x.device, dtype=x.dtype)
+    for layer in torch.unique(layer_id).tolist():
+        mask = layer_id == int(layer)
+        coeff = compute_risk_coefficients(x[mask], int(layer), recommended, risk_basis, safe_center)
+        raw = coeff.norm(dim=-1, keepdim=True)
+        out[mask] = normalize_implicit_risk_value(raw, lower, upper, clip=clip).to(dtype=x.dtype)
+    return out
 
 
 def lambda_flow_ramp(

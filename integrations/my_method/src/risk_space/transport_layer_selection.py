@@ -11,7 +11,7 @@ import torch
 from .recommended_config import RecommendedRiskConfig, hidden_layers_to_lora_layers, load_recommended_risk_config
 from ..data_loader import load_dataset
 from ..flow_matching.model import FlowVectorField
-from ..flow_matching.utils import compute_risk_coefficients
+from ..flow_matching.utils import compute_risk_coefficients, dynamic_implicit_risk_norm, load_stage2_implicit_normalization
 from ..model_utils import infer_input_device, load_model_and_processor, prepare_vl_inputs
 from ..utils import ensure_dir, load_json, logger, resolve_path, save_json
 
@@ -398,6 +398,8 @@ def _load_flow_teacher_for_selection(config: Dict[str, Any], path: Path, device:
     ).to(device)
     model.load_state_dict(data["state_dict"])
     model.eval()
+    model._dynamic_conditioning = data.get("dynamic_conditioning") or {}
+    model._static_cond_dim = int(data.get("static_cond_dim", int(data["cond_dim"])))
     return model
 
 
@@ -444,6 +446,35 @@ def _selection_condition(
     group = torch.zeros(3, device=x.device, dtype=x.dtype)
     group[int(group_id)] = 1.0
     return torch.cat([x, coeff.to(x.dtype), torch.tensor([float(explicit_risk)], device=x.device, dtype=x.dtype), group], dim=0)[None, :]
+
+
+def _maybe_append_selection_dynamic_risk(
+    cond: torch.Tensor,
+    x: torch.Tensor,
+    layer: int,
+    rec: RecommendedRiskConfig,
+    risk_basis: Dict[int, torch.Tensor],
+    safe_center: Dict[int, torch.Tensor],
+    flow: FlowVectorField,
+    lower: float,
+    upper: float,
+    clip: bool,
+) -> torch.Tensor:
+    dynamic_cfg = getattr(flow, "_dynamic_conditioning", {}) or {}
+    if not bool(dynamic_cfg.get("R_imp_norm_t", False)):
+        return cond
+    layer_id = torch.tensor([int(layer)], device=x.device)
+    r_imp = dynamic_implicit_risk_norm(
+        x[None, :],
+        layer_id,
+        rec,
+        risk_basis,
+        safe_center,
+        lower,
+        upper,
+        clip=clip,
+    )
+    return torch.cat([cond, r_imp.to(device=cond.device, dtype=cond.dtype)], dim=-1)
 
 
 def _module_output_vector(raw_output: Any, last_pos: int) -> Optional[torch.Tensor]:
@@ -521,6 +552,10 @@ def select_modules_by_flow_rit(
     flow_path = _resolve_flow_teacher_path(config)
     flow = _load_flow_teacher_for_selection(config, flow_path, device)
     flow_dtype = next(flow.parameters()).dtype
+    if bool((getattr(flow, "_dynamic_conditioning", {}) or {}).get("R_imp_norm_t", False)):
+        norm_lower, norm_upper, norm_clip = load_stage2_implicit_normalization(config)
+    else:
+        norm_lower, norm_upper, norm_clip = 0.0, 1.0, True
 
     candidates = _candidate_module_names(model, config, candidate_layers)
     if not candidates:
@@ -579,6 +614,18 @@ def select_modules_by_flow_rit(
                         explicit_risk=1.0,
                         group_id=0,
                     ).to(device=device, dtype=flow_dtype)
+                    cond = _maybe_append_selection_dynamic_risk(
+                        cond,
+                        h.float().to(device=device, dtype=flow_dtype),
+                        layer,
+                        recommended,
+                        risk_basis,
+                        safe_center,
+                        flow,
+                        norm_lower,
+                        norm_upper,
+                        norm_clip,
+                    )
                     t = torch.zeros(1, 1, device=device, dtype=flow_dtype)
                     flow_vec = flow(h[None, :].to(device=device, dtype=flow_dtype), t, cond, torch.tensor([layer], device=device))
                     rit = torch.relu(torch.sum(flow_vec[0].float() * op.detach().float().to(flow_vec.device)))

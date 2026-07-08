@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 import torch.nn as nn
@@ -85,13 +85,15 @@ def euler_integrate_flow(
     *,
     layer_id: Optional[torch.Tensor] = None,
     steps: int = 8,
+    cond_fn: Optional[Callable[[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]], torch.Tensor]] = None,
 ) -> torch.Tensor:
     x = x0
     steps = max(1, int(steps))
     dt = 1.0 / steps
     for i in range(steps):
         t = torch.full((x.shape[0], 1), i / steps, device=x.device, dtype=x.dtype)
-        x = x + dt * model(x, t, cond, layer_id)
+        cond_t = cond_fn(x, t, cond, layer_id) if cond_fn is not None else cond
+        x = x + dt * model(x, t, cond_t, layer_id)
     return x
 
 
@@ -102,12 +104,13 @@ def euler_integrate_flow_trainable(
     *,
     layer_id: Optional[torch.Tensor] = None,
     steps: int = 8,
+    cond_fn: Optional[Callable[[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]], torch.Tensor]] = None,
 ) -> torch.Tensor:
     x = x0
     steps = max(1, int(steps))
     dt = 1.0 / steps
     for i in range(steps):
         t = torch.full((x.shape[0], 1), i / steps, device=x.device, dtype=x.dtype)
-        x = x + dt * model(x, t, cond, layer_id)
+        cond_t = cond_fn(x, t, cond, layer_id) if cond_fn is not None else cond
+        x = x + dt * model(x, t, cond_t, layer_id)
     return x
-

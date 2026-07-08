@@ -140,15 +140,19 @@ def main() -> None:
     target_cfg = _flow_target_config(config)
     teacher_path = resolve_path(config, f"{flow_out}/flow_teacher.pt")
     force_for_target_mismatch = False
-    if args.reuse_existing and not args.force and teacher_path.exists() and args.flow_target is not None:
+    if args.reuse_existing and not args.force and teacher_path.exists():
         try:
             existing = torch.load(teacher_path, map_location="cpu", weights_only=False)
+            existing_dynamic = existing.get("dynamic_conditioning") or {}
+            if not bool(existing_dynamic.get("R_imp_norm_t", False)):
+                print("[reuse_existing] Stage 2.5 Flow teacher: existing teacher lacks dynamic R_imp_norm(t); recomputing.")
+                force_for_target_mismatch = True
             existing_target = existing.get("flow_target")
-            if not existing_target:
+            if args.flow_target is not None and not existing_target:
                 print("[reuse_existing] Stage 2.5 Flow teacher: existing teacher has no flow_target metadata; recomputing.")
                 print(f"  - requested: {target_cfg}")
                 force_for_target_mismatch = True
-            elif (
+            elif args.flow_target is not None and (
                 existing_target.get("mode") != target_cfg.get("mode")
                 or abs(float(existing_target.get("safe_weight", 0.0)) - float(target_cfg.get("safe_weight", 0.0))) > 1e-6
                 or abs(float(existing_target.get("retain_weight", 0.0)) - float(target_cfg.get("retain_weight", 0.0))) > 1e-6

@@ -241,13 +241,16 @@ def build_flow_features(
             )
 
     hidden_dim = int(examples[0]["x0"].numel())
-    cond_dim = int(examples[0]["cond"].numel())
+    static_cond_dim = int(examples[0]["cond"].numel())
+    cond_dim = static_cond_dim + 1
     feature_path = out_dir / f"features_{split}.pt"
     torch.save(
         {
             "examples": examples,
             "hidden_dim": hidden_dim,
             "cond_dim": cond_dim,
+            "static_cond_dim": static_cond_dim,
+            "dynamic_conditioning": {"R_imp_norm_t": True, "normalization": "stage2"},
             "recommended": rec.to_dict(),
             "flow_target": target_cfg,
             "representation_pooling": actual_pooling,
@@ -265,6 +268,8 @@ def build_flow_features(
         "lora_train_layers": rec.lora_train_layers,
         "hidden_dim": hidden_dim,
         "cond_dim": cond_dim,
+        "static_cond_dim": static_cond_dim,
+        "dynamic_conditioning": {"R_imp_norm_t": True, "normalization": "stage2"},
         "flow_target_mode": target_cfg["mode"],
         "flow_target_safe_weight": target_cfg["safe_weight"],
         "flow_target_retain_weight": target_cfg["retain_weight"],
