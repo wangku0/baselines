@@ -101,7 +101,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("integrations/my_method/infer_time_flow/outputs/unified_eval"))
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
+    parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
+    parser.add_argument("--risk-trace-max-records", type=int, default=200000)
     parser.add_argument("--safeeraser-lora-r", type=int, default=32)
     parser.add_argument("--safeeraser-lora-alpha", type=int, default=256)
     parser.add_argument("--no-prefill-intervention", action="store_true")
@@ -142,7 +144,9 @@ def main() -> None:
         flow_teacher_path=args.flow_teacher_path,
         strength=args.strength,
         risk_gate_threshold=args.risk_gate_threshold,
+        risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
+        risk_trace_max_records=args.risk_trace_max_records,
         intervene_on_prefill=not args.no_prefill_intervention,
         intervene_on_decode=not args.no_decode_intervention,
     )
@@ -152,6 +156,7 @@ def main() -> None:
         "intervention": "infer_time_flow",
         "checkpoint_path": str(args.checkpoint_path) if args.checkpoint_path is not None else None,
         "flow_teacher_path": str(controller.flow_path),
+        "risk_gate_mode": args.risk_gate_mode,
         **controller.stats.to_dict(),
     }
     del after_model, after_processor
@@ -208,6 +213,7 @@ def main() -> None:
     }
     args.output_dir.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.output_dir / f"{args.method_name}_implicit_scores.csv", index=False)
+    controller.write_risk_trace(args.output_dir / f"{args.method_name}_implicit_flow_risk_trace.jsonl")
     summary_path = args.output_dir / f"{args.method_name}_implicit_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))

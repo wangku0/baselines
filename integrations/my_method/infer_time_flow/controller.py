@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,8 @@ class FlowInterventionStats:
     mean_explicit_risk_sum: float = 0.0
     mean_total_risk_sum: float = 0.0
     mean_delta_norm_sum: float = 0.0
+    risk_gate_mode: str = "fused"
+    trace_dropped: int = 0
 
     def to_dict(self) -> dict:
         denom = max(self.calls, 1)
@@ -40,6 +43,8 @@ class FlowInterventionStats:
             "mean_explicit_risk": self.mean_explicit_risk_sum / denom,
             "mean_total_risk": self.mean_total_risk_sum / denom,
             "mean_delta_norm": self.mean_delta_norm_sum / denom,
+            "risk_gate_mode": self.risk_gate_mode,
+            "trace_dropped": self.trace_dropped,
         }
 
 
@@ -110,11 +115,13 @@ class InferenceTimeFlowController:
         hidden_layers: Optional[Iterable[int]] = None,
         strength: float = 0.25,
         risk_gate_threshold: float = 0.0,
+        risk_gate_mode: str = "fused",
         max_delta_norm_ratio: float = 0.20,
         explicit_risk: float = 1.0,
         group_id: int = 0,
         intervene_on_prefill: bool = True,
         intervene_on_decode: bool = True,
+        risk_trace_max_records: int = 200000,
         device: Optional[torch.device] = None,
     ):
         self.model = model
@@ -139,6 +146,9 @@ class InferenceTimeFlowController:
         self.static_cond_dim = int(self.ckpt.get("static_cond_dim", self.cond_dim - 1 if self.use_dynamic_r_imp else self.cond_dim))
         self.strength = float(strength)
         self.risk_gate_threshold = float(risk_gate_threshold)
+        self.risk_gate_mode = str(risk_gate_mode).lower()
+        if self.risk_gate_mode not in {"fused", "implicit"}:
+            raise ValueError(f"Unsupported risk_gate_mode={risk_gate_mode!r}; use 'fused' or 'implicit'.")
         self.max_delta_norm_ratio = float(max_delta_norm_ratio)
         self.explicit_risk = float(explicit_risk)
         self.group_id = int(group_id)
@@ -148,7 +158,53 @@ class InferenceTimeFlowController:
         self.intervene_on_decode = bool(intervene_on_decode)
         self.handles: List[Any] = []
         self.stats = FlowInterventionStats()
+        self.stats.risk_gate_mode = self.risk_gate_mode
+        self.risk_trace_max_records = int(risk_trace_max_records)
+        self.risk_trace: List[Dict[str, Any]] = []
         self._enabled = False
+
+    def _append_trace(
+        self,
+        *,
+        call_index: int,
+        hidden_layer: int,
+        phase: str,
+        implicit_risk: float,
+        explicit_risk: float,
+        gate_risk: float,
+        gate: float,
+        active: bool,
+        delta_norm: float,
+    ) -> None:
+        if self.risk_trace_max_records <= 0:
+            return
+        if len(self.risk_trace) >= self.risk_trace_max_records:
+            self.stats.trace_dropped += 1
+            return
+        self.risk_trace.append(
+            {
+                "call_index": int(call_index),
+                "hidden_layer": int(hidden_layer),
+                "phase": phase,
+                "risk_gate_mode": self.risk_gate_mode,
+                "R_imp_norm": float(implicit_risk),
+                "R_exp": float(explicit_risk),
+                "R_gate": float(gate_risk),
+                "gate": float(gate),
+                "active": bool(active),
+                "delta_norm": float(delta_norm),
+                "strength": self.strength,
+                "risk_gate_threshold": self.risk_gate_threshold,
+                "max_delta_norm_ratio": self.max_delta_norm_ratio,
+                "group_id": int(self._context_group_id),
+            }
+        )
+
+    def write_risk_trace(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for row in self.risk_trace:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     def _static_condition(self, x: torch.Tensor, hidden_layer: int) -> torch.Tensor:
         coeff = compute_risk_coefficients(
@@ -192,16 +248,31 @@ class InferenceTimeFlowController:
             cond = torch.cat([cond, risk.to(dtype=cond.dtype)], dim=-1)
         return cond, risk
 
-    def _intervene_vector(self, h: torch.Tensor, hidden_layer: int) -> torch.Tensor:
+    def _intervene_vector(self, h: torch.Tensor, hidden_layer: int, *, phase: str) -> torch.Tensor:
         original_device = h.device
         original_dtype = h.dtype
         x = h.detach().to(device=self.device, dtype=next(self.teacher.parameters()).dtype)
         cond, risk = self._condition(x, hidden_layer)
         explicit_risk = torch.tensor([[self._context_explicit_risk]], device=risk.device, dtype=risk.dtype)
-        total_risk = 0.5 * explicit_risk + 0.5 * risk
+        if self.risk_gate_mode == "implicit":
+            total_risk = risk
+        else:
+            total_risk = 0.5 * explicit_risk + 0.5 * risk
         threshold = self.risk_gate_threshold
         gate = torch.clamp((total_risk - threshold) / max(1.0 - threshold, 1e-6), 0.0, 1.0)
+        call_index = self.stats.calls + 1
         if float(gate.item()) <= 0.0 or self.strength == 0.0:
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float(total_risk.item()),
+                gate=float(gate.item()),
+                active=False,
+                delta_norm=0.0,
+            )
             self.stats.calls += 1
             self.stats.mean_risk_sum += float(risk.item())
             self.stats.mean_explicit_risk_sum += float(explicit_risk.item())
@@ -218,13 +289,25 @@ class InferenceTimeFlowController:
             if delta_norm > max_norm:
                 delta = delta * (max_norm / delta_norm)
         out = (x + delta).to(device=original_device, dtype=original_dtype)
+        delta_norm_value = float(delta.norm().detach().cpu())
+        self._append_trace(
+            call_index=call_index,
+            hidden_layer=hidden_layer,
+            phase=phase,
+            implicit_risk=float(risk.item()),
+            explicit_risk=float(explicit_risk.item()),
+            gate_risk=float(total_risk.item()),
+            gate=float(gate.item()),
+            active=True,
+            delta_norm=delta_norm_value,
+        )
         self.stats.calls += 1
         self.stats.active_calls += 1
         self.stats.mean_gate_sum += float(gate.item())
         self.stats.mean_risk_sum += float(risk.item())
         self.stats.mean_explicit_risk_sum += float(explicit_risk.item())
         self.stats.mean_total_risk_sum += float(total_risk.item())
-        self.stats.mean_delta_norm_sum += float(delta.norm().detach().cpu())
+        self.stats.mean_delta_norm_sum += delta_norm_value
         return out
 
     def _should_intervene(self, hidden: torch.Tensor) -> bool:
@@ -240,8 +323,9 @@ class InferenceTimeFlowController:
             raw_hidden = output[0] if isinstance(output, tuple) else output
             if not torch.is_tensor(raw_hidden) or not self._should_intervene(raw_hidden):
                 return output
+            phase = "decode" if raw_hidden.shape[1] == 1 else "prefill"
             hidden = raw_hidden.clone()
-            hidden[:, -1, :] = self._intervene_vector(hidden[0, -1, :], hidden_layer)
+            hidden[:, -1, :] = self._intervene_vector(hidden[0, -1, :], hidden_layer, phase=phase)
             if isinstance(output, tuple):
                 return (hidden,) + output[1:]
             return hidden

@@ -24,6 +24,12 @@ h_l' = h_l + strength * gate * velocity
 For SafeEraser-format generation, harmful/SD prompts use `R_exp=1`, while
 safe-neighbor and retain prompts use `R_exp=0`.
 
+Use `--risk-gate-mode fused` for the default `0.5 * R_exp + 0.5 * R_imp_norm(t)`
+gate, or `--risk-gate-mode implicit` to gate only by `R_imp_norm(t)`.
+Each hook call is written to `*.flow_risk_trace.jsonl` with `R_imp_norm`,
+`R_exp`, the actual `R_gate`, `gate`, layer, phase, and delta norm. Use
+`--risk-trace-max-records` to cap the number of saved trace rows.
+
 Run:
 
 ```bash
@@ -35,7 +41,8 @@ python integrations/my_method/infer_time_flow/run_evaluation.py \
   --eval-file integrations/my_method/outputs/data/violence_50_val_eval.json \
   --method-name po_infer_time_flow_val50 \
   --expected-records 50 \
-  --max-new-tokens 256
+  --max-new-tokens 256 \
+  --risk-gate-mode fused
 ```
 
 Omit `--checkpoint-path` to test base-model inference-time Flow only. Keep it
@@ -45,9 +52,11 @@ Outputs:
 
 ```text
 infer_time_flow_val50_predictions.json
+infer_time_flow_val50_predictions.flow_risk_trace.jsonl
 infer_time_flow_val50_safeeraser_evaluated.json
 infer_time_flow_val50_safeeraser_evaluated.summary.json
 infer_time_flow_val50_implicit_scores.csv
+infer_time_flow_val50_implicit_flow_risk_trace.jsonl
 infer_time_flow_val50_implicit_summary.json
 infer_time_flow_val50_final_report.json
 ```

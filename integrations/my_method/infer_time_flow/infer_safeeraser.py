@@ -96,7 +96,9 @@ def main() -> None:
     parser.add_argument("--max_memory_per_gpu", default=None)
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk_gate_threshold", type=float, default=0.0)
+    parser.add_argument("--risk_gate_mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max_delta_norm_ratio", type=float, default=0.20)
+    parser.add_argument("--risk_trace_max_records", type=int, default=200000)
     parser.add_argument("--no_prefill_intervention", action="store_true")
     parser.add_argument("--no_decode_intervention", action="store_true")
     args = parser.parse_args()
@@ -126,7 +128,9 @@ def main() -> None:
         flow_teacher_path=args.flow_teacher_path,
         strength=args.strength,
         risk_gate_threshold=args.risk_gate_threshold,
+        risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
+        risk_trace_max_records=args.risk_trace_max_records,
         intervene_on_prefill=not args.no_prefill_intervention,
         intervene_on_decode=not args.no_decode_intervention,
     )
@@ -249,8 +253,11 @@ def main() -> None:
     out.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     stats_path = out.with_suffix(".flow_stats.json")
     stats_path.write_text(json.dumps(controller.stats.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    trace_path = out.with_suffix(".flow_risk_trace.jsonl")
+    controller.write_risk_trace(trace_path)
     print(f"Results saved to {out}")
     print(f"Flow intervention stats saved to {stats_path}")
+    print(f"Flow risk trace saved to {trace_path}")
 
 
 if __name__ == "__main__":

@@ -33,7 +33,9 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
+    parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
+    parser.add_argument("--risk-trace-max-records", type=int, default=200000)
     parser.add_argument("--no-prefill-intervention", action="store_true")
     parser.add_argument("--no-decode-intervention", action="store_true")
     parser.add_argument("--skip-inference", action="store_true")
@@ -70,8 +72,12 @@ def main() -> None:
             str(args.strength),
             "--risk_gate_threshold",
             str(args.risk_gate_threshold),
+            "--risk_gate_mode",
+            args.risk_gate_mode,
             "--max_delta_norm_ratio",
             str(args.max_delta_norm_ratio),
+            "--risk_trace_max_records",
+            str(args.risk_trace_max_records),
         ]
         if args.checkpoint_path:
             command.extend(["--checkpoint_path", args.checkpoint_path])
@@ -125,8 +131,12 @@ def main() -> None:
             str(args.strength),
             "--risk-gate-threshold",
             str(args.risk_gate_threshold),
+            "--risk-gate-mode",
+            args.risk_gate_mode,
             "--max-delta-norm-ratio",
             str(args.max_delta_norm_ratio),
+            "--risk-trace-max-records",
+            str(args.risk_trace_max_records),
         ]
         if args.checkpoint_path:
             implicit_command.extend(["--checkpoint-path", args.checkpoint_path])
