@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import torch
+from peft import LoraConfig, get_peft_model
 from PIL import Image
 from tqdm import tqdm
 from transformers import AutoProcessor, LlavaForConditionalGeneration
@@ -22,6 +23,42 @@ from utils import get_attn_implementation, resolve_dataset_path
 
 
 random.seed(233)
+
+SAFEERASER_TARGET_MODULES = (
+    r".*language_model.*\."
+    r"(up_proj|k_proj|linear_2|down_proj|v_proj|q_proj|o_proj|gate_proj|linear_1)"
+)
+
+
+def load_safeeraser_checkpoint(model, checkpoint_path: str, r: int = 32, alpha: int = 256):
+    print(f"Loading SafeEraser checkpoint: {checkpoint_path}")
+    peft_config = LoraConfig(
+        r=r,
+        lora_alpha=alpha,
+        target_modules=SAFEERASER_TARGET_MODULES,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, peft_config)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"Expected state-dict checkpoint at {checkpoint_path}, got {type(checkpoint).__name__}")
+    model_keys = set(model.state_dict())
+    matched_keys = model_keys.intersection(checkpoint)
+    matched_lora_keys = [key for key in matched_keys if "lora_" in key]
+    if not matched_lora_keys:
+        raise RuntimeError(
+            "The checkpoint did not match any SafeEraser LoRA parameters. "
+            f"Sample checkpoint keys: {list(checkpoint)[:5]}"
+        )
+    incompatible = model.load_state_dict(checkpoint, strict=False)
+    print(
+        f"Loaded {len(matched_keys)}/{len(checkpoint)} checkpoint tensors "
+        f"({len(matched_lora_keys)} LoRA tensors); "
+        f"unexpected={len(incompatible.unexpected_keys)}"
+    )
+    return model.merge_and_unload()
 
 
 def _move_inputs(inputs, device, dtype):
@@ -50,6 +87,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SafeEraser-format inference with inference-time Flow hidden-state intervention.")
     parser.add_argument("--eval_file", required=True)
     parser.add_argument("--model_path", default="llava-hf/llava-1.5-7b-hf")
+    parser.add_argument("--checkpoint_path", "--checkpoint-path", default=None)
     parser.add_argument("--output_file", required=True)
     parser.add_argument("--config", default="integrations/my_method/configs/safeeraser_llava.yaml")
     parser.add_argument("--flow_teacher_path", default=None)
@@ -77,6 +115,8 @@ def main() -> None:
     )
     if not use_device_map:
         model.half().to("cuda:0")
+    if args.checkpoint_path:
+        model = load_safeeraser_checkpoint(model, args.checkpoint_path)
     model.eval()
     input_device = model.get_input_embeddings().weight.device
 

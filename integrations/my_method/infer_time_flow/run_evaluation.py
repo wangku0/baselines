@@ -21,6 +21,7 @@ def run(command: list[str], cwd: Path, env: dict[str, str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run inference-time Flow intervention with my_method/SafeEraser-aligned metrics.")
     parser.add_argument("--model-path", required=True, help="Base LLaVA model path/repo id.")
+    parser.add_argument("--checkpoint-path", "--checkpoint_path", default=None, help="Optional SafeEraser PO LoRA checkpoint.pt to merge before Flow intervention.")
     parser.add_argument("--config", default="integrations/my_method/configs/safeeraser_llava.yaml")
     parser.add_argument("--flow-teacher-path", default=None)
     parser.add_argument("--eval-file", required=True)
@@ -72,6 +73,8 @@ def main() -> None:
             "--max_delta_norm_ratio",
             str(args.max_delta_norm_ratio),
         ]
+        if args.checkpoint_path:
+            command.extend(["--checkpoint_path", args.checkpoint_path])
         if args.flow_teacher_path:
             command.extend(["--flow_teacher_path", args.flow_teacher_path])
         if args.no_prefill_intervention:
@@ -125,6 +128,8 @@ def main() -> None:
             "--max-delta-norm-ratio",
             str(args.max_delta_norm_ratio),
         ]
+        if args.checkpoint_path:
+            implicit_command.extend(["--checkpoint-path", args.checkpoint_path])
         if args.flow_teacher_path:
             implicit_command.extend(["--flow-teacher-path", args.flow_teacher_path])
         if args.no_prefill_intervention:
@@ -158,4 +163,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

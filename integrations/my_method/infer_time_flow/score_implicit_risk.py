@@ -19,6 +19,7 @@ from scripts.score_implicit_risk import (
     _scoring_baselines,
     clearance_summary,
     compare_scores,
+    load_safeeraser_checkpoint,
     load_variant,
     release_cuda_cache,
     score_model,
@@ -91,6 +92,7 @@ def score_model_with_context(model, processor, controller, config, samples: list
 def main() -> None:
     parser = argparse.ArgumentParser(description="Implicit-risk scoring for inference-time Flow intervention.")
     parser.add_argument("--config", default="integrations/my_method/configs/safeeraser_llava.yaml")
+    parser.add_argument("--checkpoint-path", "--checkpoint_path", type=Path, default=None)
     parser.add_argument("--flow-teacher-path", default=None)
     parser.add_argument("--method-name", required=True)
     parser.add_argument("--split", choices=["train", "val"], default="val")
@@ -100,6 +102,8 @@ def main() -> None:
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
+    parser.add_argument("--safeeraser-lora-r", type=int, default=32)
+    parser.add_argument("--safeeraser-lora-alpha", type=int, default=256)
     parser.add_argument("--no-prefill-intervention", action="store_true")
     parser.add_argument("--no-decode-intervention", action="store_true")
     args = parser.parse_args()
@@ -122,6 +126,16 @@ def main() -> None:
     release_cuda_cache()
 
     after_model, after_processor = load_base_model_and_processor(config)
+    if args.checkpoint_path is not None:
+        after_model = load_safeeraser_checkpoint(
+            after_model,
+            args.checkpoint_path,
+            args.safeeraser_lora_r,
+            args.safeeraser_lora_alpha,
+        )
+        if hasattr(after_model, "merge_and_unload"):
+            after_model = after_model.merge_and_unload()
+        after_model.eval()
     controller = InferenceTimeFlowController(
         after_model,
         config_path=args.config,
@@ -136,6 +150,7 @@ def main() -> None:
         after = score_model_with_context(after_model, after_processor, controller, config, samples, args.method_name, sample_types)
     after_stats = {
         "intervention": "infer_time_flow",
+        "checkpoint_path": str(args.checkpoint_path) if args.checkpoint_path is not None else None,
         "flow_teacher_path": str(controller.flow_path),
         **controller.stats.to_dict(),
     }

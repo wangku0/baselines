@@ -29,13 +29,17 @@ Run:
 ```bash
 python integrations/my_method/infer_time_flow/run_evaluation.py \
   --model-path llava-hf/llava-1.5-7b-hf \
+  --checkpoint-path integrations/my_method/infer_time_flow/checkpoint.pt \
   --config integrations/my_method/configs/safeeraser_llava.yaml \
   --flow-teacher-path integrations/my_method/outputs/stage2_5_flow/flow_teacher.pt \
   --eval-file integrations/my_method/outputs/data/violence_50_val_eval.json \
-  --method-name infer_time_flow_val50 \
+  --method-name po_infer_time_flow_val50 \
   --expected-records 50 \
   --max-new-tokens 256
 ```
+
+Omit `--checkpoint-path` to test base-model inference-time Flow only. Keep it
+when testing SafeEraser PO plus inference-time Flow.
 
 Outputs:
 
