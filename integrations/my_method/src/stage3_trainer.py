@@ -122,6 +122,9 @@ def train_stage3_lora(
         try:
             model.gradient_checkpointing_enable()
             logger.info("Enabled gradient checkpointing for Stage 3 training.")
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+                logger.info("Enabled input gradients for PEFT LoRA training with gradient checkpointing.")
         except Exception as exc:
             logger.warning("Could not enable gradient checkpointing: %s", exc)
     model.train()
