@@ -19,6 +19,7 @@ def _stage2_metrics_dir(config: Dict[str, Any]) -> Path:
 
 def resolve_implicit_settings(config: Dict[str, Any]) -> Dict[str, Any]:
     settings = dict(config.get("stage2", {}).get("implicit_risk", {}))
+    explicit_score_mode = "score_mode" in settings
     if settings.get("use_stage1_5_recommended", True):
         metrics_root = resolve_path(config, config["outputs"]["metrics_dir"])
         rec_cfg = metrics_root / "stage1_5" / "recommended_config.json"
@@ -26,13 +27,15 @@ def resolve_implicit_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         if rec_cfg.exists():
             data = json.load(rec_cfg.open("r", encoding="utf-8"))
             settings["k"] = int(data.get("recommended_k", settings.get("k", 2)))
-            settings["score_mode"] = data.get("recommended_score_mode", settings.get("score_mode", "centered"))
+            if not explicit_score_mode:
+                settings["score_mode"] = data.get("recommended_score_mode", settings.get("score_mode", "centered"))
         else:
             logger.warning("Missing %s; falling back to config stage2.implicit_risk.", rec_cfg)
         if rec_layers.exists():
             data = json.load(rec_layers.open("r", encoding="utf-8"))
             settings["layers"] = data.get("recommended_layers", settings.get("layers", [12, 16, 20, 24]))
-            settings["score_mode"] = data.get("recommended_score_mode", settings.get("score_mode", "centered"))
+            if not explicit_score_mode:
+                settings["score_mode"] = data.get("recommended_score_mode", settings.get("score_mode", "centered"))
             settings["k"] = int(data.get("recommended_k", settings.get("k", 2)))
         else:
             logger.warning("Missing %s; falling back to config stage2.implicit_risk layers.", rec_layers)
@@ -46,7 +49,8 @@ def resolve_implicit_settings(config: Dict[str, Any]) -> Dict[str, Any]:
         selection = select_layers_by_risk_transport(config, rec)
         settings["layers"] = selection.selected_hidden_layers
         settings["k"] = int(rec.recommended_k)
-        settings["score_mode"] = rec.recommended_score_mode
+        if not explicit_score_mode:
+            settings["score_mode"] = rec.recommended_score_mode
         settings["risk_basis_path"] = rec.risk_basis_path
         settings["layer_selection_method"] = "risk_transport_influence"
         settings["layer_selection_output_path"] = selection.output_path

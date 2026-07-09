@@ -41,85 +41,6 @@ def _condition(x: torch.Tensor, coeff: torch.Tensor, r_explicit: float, group_id
     return torch.cat([x.float(), coeff.float(), torch.tensor([float(r_explicit)], dtype=torch.float32), group], dim=0)
 
 
-def _save_dynamic_risk_normalization(
-    config: Dict[str, Any],
-    out_dir: Path,
-    metadata: List[Dict[str, Any]],
-    hidden_by_layer: Dict[int, torch.Tensor],
-    rec: RecommendedRiskConfig,
-    basis: Dict[int, torch.Tensor],
-    centers: Dict[int, torch.Tensor],
-) -> Path:
-    cfg = config.get("flow_matching", {}).get("dynamic_risk_normalization", {})
-    safe_percentile = float(cfg.get("safe_percentile", 95))
-    harmful_percentile = float(cfg.get("harmful_percentile", 95))
-    clip = bool(cfg.get("clip", True))
-    filename = str(cfg.get("filename", "dynamic_implicit_normalization.json"))
-    safe_indices = [
-        i for i, meta in enumerate(metadata)
-        if meta.get("sample_type") in {"safe_neighbor", "retain"}
-    ]
-    harmful_indices = [
-        i for i, meta in enumerate(metadata)
-        if meta.get("sample_type") == "harmful_trigger"
-    ]
-    if not safe_indices or not harmful_indices:
-        raise ValueError(
-            "Dynamic implicit-risk calibration requires harmful_trigger and "
-            "safe_neighbor/retain samples in the train hidden cache."
-        )
-
-    layer_stats: Dict[str, Dict[str, float | int]] = {}
-    for layer in rec.recommended_hidden_layers:
-        hidden = hidden_by_layer[int(layer)]
-        safe_raw = compute_risk_coefficients(
-            hidden[safe_indices],
-            int(layer),
-            rec,
-            basis,
-            centers,
-        ).norm(dim=-1)
-        harmful_raw = compute_risk_coefficients(
-            hidden[harmful_indices],
-            int(layer),
-            rec,
-            basis,
-            centers,
-        ).norm(dim=-1)
-        lower = float(torch.quantile(safe_raw, safe_percentile / 100.0))
-        upper = float(torch.quantile(harmful_raw, harmful_percentile / 100.0))
-        if upper <= lower:
-            raise ValueError(
-                f"Dynamic implicit risk is not separable at layer {layer}: "
-                f"safe/retain P{safe_percentile:g}={lower:.6g} >= "
-                f"harmful P{harmful_percentile:g}={upper:.6g}. "
-                "Choose a more discriminative risk layer/subspace before training Flow."
-            )
-        layer_stats[str(int(layer))] = {
-            "lower_value": lower,
-            "upper_value": upper,
-            "safe_percentile": safe_percentile,
-            "harmful_percentile": harmful_percentile,
-            "safe_count": int(safe_raw.numel()),
-            "harmful_count": int(harmful_raw.numel()),
-            "safe_mean": float(safe_raw.mean()),
-            "harmful_mean": float(harmful_raw.mean()),
-        }
-
-    path = out_dir / filename
-    save_json(
-        {
-            "method": "per_layer_safe_harmful_percentile",
-            "definition": "single-layer ||B_l^T(h_l-mu_safe,l)||_2",
-            "clip": clip,
-            "layers": layer_stats,
-        },
-        path,
-    )
-    logger.info("Saved per-layer dynamic implicit-risk normalization to %s", path)
-    return path
-
-
 def _flow_target_config(config: Dict[str, Any]) -> Dict[str, Any]:
     target_cfg = config.get("flow_matching", {}).get("target", {})
     mode = str(target_cfg.get("mode", "safe_neighbor")).lower()
@@ -199,6 +120,18 @@ def build_flow_features(
         )
     elif layer_method not in {"stage1_5_ablation", "stage1_5_recommended"}:
         raise ValueError(f"Unsupported layer selection method for flow features: {layer_method}")
+    explicit_score_mode = config.get("stage2", {}).get("implicit_risk", {}).get("score_mode")
+    if explicit_score_mode and str(explicit_score_mode) != str(rec.recommended_score_mode):
+        rec = RecommendedRiskConfig(
+            recommended_k=rec.recommended_k,
+            recommended_score_mode=str(explicit_score_mode),
+            recommended_hidden_layers=rec.recommended_hidden_layers,
+            lora_train_layers=rec.lora_train_layers,
+            risk_basis_path=rec.risk_basis_path,
+            normalization_config=rec.normalization_config,
+            source_path=rec.source_path,
+            recommended_config_path=rec.recommended_config_path,
+        )
     save_resolved_recommended_config(rec, out_dir / "recommended_config_resolved.json")
     representation_cfg = config.get("flow_matching", {}).get("representation", {})
     requested_pooling = representation_cfg.get("pooling", "stage1_last_input_token_cache")
@@ -213,16 +146,15 @@ def build_flow_features(
     metadata: List[Dict[str, Any]] = hidden["metadata"]
     hidden_by_layer = {int(k): v.float() for k, v in hidden["hidden_states"].items()}
     basis, centers = _load_risk_basis(Path(rec.risk_basis_path))
-    calibration_hidden = hidden if split == "train" else _load_hidden_cache(config, "train")
-    dynamic_norm_path = _save_dynamic_risk_normalization(
-        config,
-        out_dir,
-        calibration_hidden["metadata"],
-        {int(k): v.float() for k, v in calibration_hidden["hidden_states"].items()},
-        rec,
-        basis,
-        centers,
+    metrics_dir = config.get("stage2", {}).get("outputs", {}).get(
+        "metrics_dir", "integrations/my_method/outputs/metrics/stage2"
     )
+    dynamic_norm_path = resolve_path(config, str(Path(metrics_dir) / "implicit_normalization.json"))
+    if not dynamic_norm_path.exists():
+        raise FileNotFoundError(
+            f"Missing Stage2 implicit normalization for Flow R_imp(t): {dynamic_norm_path}. "
+            "Run scripts/05_stage2_risk_evaluation.py before Stage 2.5 Flow training."
+        )
 
     stage2_path = resolve_path(config, config.get("stage3", {}).get("data", {}).get(f"{split}_stage2_scores", f"integrations/my_method/outputs/metrics/stage2/{split}_stage2_risk_scores.csv"))
     explicit = {}
@@ -341,7 +273,7 @@ def build_flow_features(
             "static_cond_dim": static_cond_dim,
             "dynamic_conditioning": {
                 "R_imp_norm_t": True,
-                "normalization": "per_layer_safe_harmful_percentile",
+                "normalization": "stage2_sample_risk",
                 "normalization_path": str(dynamic_norm_path),
             },
             "recommended": rec.to_dict(),
@@ -364,7 +296,7 @@ def build_flow_features(
         "static_cond_dim": static_cond_dim,
         "dynamic_conditioning": {
             "R_imp_norm_t": True,
-            "normalization": "per_layer_safe_harmful_percentile",
+            "normalization": "stage2_sample_risk",
             "normalization_path": str(dynamic_norm_path),
         },
         "flow_target_mode": target_cfg["mode"],

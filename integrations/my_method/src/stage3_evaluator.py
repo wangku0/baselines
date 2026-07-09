@@ -23,7 +23,7 @@ from .stage3_lora_utils import load_base_model_and_processor, sync_stage3_layers
 from .stage3_losses import last_token_hidden, load_risk_tensors, prepare_prompt_inputs
 from .stage3_visualize import plot_before_after
 from .utils import ensure_dir, logger, read_jsonl, resolve_path, save_json, write_jsonl
-from .flow_matching.utils import compute_risk_delta_coefficients
+from .flow_matching.utils import compute_risk_coefficients
 
 
 def _stage3_dirs(config: Dict[str, Any]) -> tuple[Path, Path, Path]:
@@ -246,10 +246,10 @@ def _implicit_baseline_samples(samples_by_id: Dict[str, Dict[str, Any]]) -> Dict
     return baselines
 
 
-def _delta_score(coeff: torch.Tensor, score_mode: str) -> float:
+def _risk_score(coeff: torch.Tensor, score_mode: str) -> float:
     if score_mode.endswith("_signed"):
         return float(coeff.mean().detach().cpu())
-    if score_mode.endswith("_positive") or score_mode.startswith("paired_delta"):
+    if score_mode.endswith("_positive"):
         return float(torch.linalg.vector_norm(torch.relu(coeff), ord=2).detach().cpu())
     return float(torch.linalg.vector_norm(coeff, ord=2).detach().cpu())
 
@@ -258,7 +258,7 @@ def _implicit_for_sample(
     model,
     processor,
     sample: Dict[str, Any],
-    baseline_sample: Dict[str, Any],
+    baseline_sample: Optional[Dict[str, Any]],
     config: Dict[str, Any],
     risk_tensors,
     lower: float,
@@ -268,22 +268,20 @@ def _implicit_for_sample(
     device = infer_input_device(model)
     max_pixels = config["stage3"].get("preprocessing", {}).get("max_pixels", 200704)
     inputs = prepare_prompt_inputs(processor, {"image_path": sample["image_path"], "instruction": sample["instruction"]}, device, max_pixels=max_pixels)
-    baseline_inputs = prepare_prompt_inputs(
-        processor,
-        {"image_path": baseline_sample["image_path"], "instruction": baseline_sample["instruction"]},
-        device,
-        max_pixels=max_pixels,
-    )
     with torch.no_grad():
         out = model(**inputs, output_hidden_states=True, return_dict=True)
-        baseline_out = model(**baseline_inputs, output_hidden_states=True, return_dict=True)
     scores = []
     score_mode = str(recommended.recommended_score_mode)
     for layer, basis in risk_tensors["risk_basis"].items():
         h = last_token_hidden(out, inputs, layer).to(basis.device)
-        h_base = last_token_hidden(baseline_out, baseline_inputs, layer).to(basis.device)
-        coeff = compute_risk_delta_coefficients((h - h_base)[None, :], layer, recommended, risk_tensors["risk_basis"])[0]
-        scores.append(_delta_score(coeff, score_mode))
+        coeff = compute_risk_coefficients(
+            h[None, :],
+            layer,
+            recommended,
+            risk_tensors["risk_basis"],
+            risk_tensors["safe_center"],
+        )[0]
+        scores.append(_risk_score(coeff, score_mode))
     raw = float(sum(scores))
     norm_before_clip = (raw - lower) / max(upper - lower, 1e-6)
     norm = norm_before_clip
@@ -325,8 +323,6 @@ def _score_rows(rows: list[Dict[str, Any]], samples_by_id: Dict[str, Dict[str, A
         sample = samples_by_id[item["sample_id"]]
         baseline_sample = baseline_by_id.get(item["sample_id"])
         try:
-            if baseline_sample is None:
-                raise ValueError("missing implicit baseline sample")
             raw, norm_before_clip, norm = _implicit_for_sample(
                 model,
                 processor,

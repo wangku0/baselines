@@ -147,7 +147,7 @@ def main() -> None:
             if not bool(existing_dynamic.get("R_imp_norm_t", False)):
                 print("[reuse_existing] Stage 2.5 Flow teacher: existing teacher lacks dynamic R_imp_norm(t); recomputing.")
                 force_for_target_mismatch = True
-            elif existing_dynamic.get("normalization") != "per_layer_safe_harmful_percentile":
+            elif existing_dynamic.get("normalization") != "stage2_sample_risk":
                 print(
                     "[reuse_existing] Stage 2.5 Flow teacher: existing teacher uses the old "
                     "dynamic-risk normalization; recomputing."

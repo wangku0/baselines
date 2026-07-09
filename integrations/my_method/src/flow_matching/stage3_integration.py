@@ -157,9 +157,9 @@ def compute_flow_stage3_losses(
     cond_dim = int(flow_bundle["ckpt"]["cond_dim"])
     dynamic_conditioning = flow_bundle.get("ckpt", {}).get("dynamic_conditioning") or {}
     use_dynamic_r_imp = bool(dynamic_conditioning.get("R_imp_norm_t", False))
-    if use_dynamic_r_imp and dynamic_conditioning.get("normalization") != "per_layer_safe_harmful_percentile":
+    if use_dynamic_r_imp and dynamic_conditioning.get("normalization") != "stage2_sample_risk":
         raise RuntimeError(
-            "Flow teacher uses the old aggregate Stage2 normalization for dynamic R_imp(t). "
+            "Flow teacher uses a stale dynamic-risk normalization for R_imp(t). "
             "Retrain Stage 2.5 before Flow distillation."
         )
     static_cond_dim = int(flow_bundle.get("ckpt", {}).get("static_cond_dim", cond_dim - 1 if use_dynamic_r_imp else cond_dim))

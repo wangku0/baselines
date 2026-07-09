@@ -137,7 +137,10 @@ class InferenceTimeFlowController:
         self.bundle = _load_flow_teacher(self.flow_path, self.device)
         self.teacher: FlowVectorField = self.bundle["model"]
         self.ckpt = self.bundle["ckpt"]
-        self.recommended: RecommendedRiskConfig = load_recommended_risk_config(self.config, allow_fallback=False)
+        if self.ckpt.get("recommended"):
+            self.recommended = RecommendedRiskConfig(**self.ckpt["recommended"])
+        else:
+            self.recommended = load_recommended_risk_config(self.config, allow_fallback=False)
         self.hidden_layers = sorted({int(x) for x in (hidden_layers or self.config["stage3"]["risk_space"].get("risk_layers") or self.recommended.recommended_hidden_layers)})
         self.block_layers = {layer - 1: layer for layer in self.hidden_layers if int(layer) > 0}
         if not self.block_layers:
@@ -147,9 +150,9 @@ class InferenceTimeFlowController:
         self.cond_dim = int(self.ckpt["cond_dim"])
         dynamic_cfg = self.ckpt.get("dynamic_conditioning") or {}
         self.use_dynamic_r_imp = bool(dynamic_cfg.get("R_imp_norm_t", False))
-        if self.use_dynamic_r_imp and dynamic_cfg.get("normalization") != "per_layer_safe_harmful_percentile":
+        if self.use_dynamic_r_imp and dynamic_cfg.get("normalization") != "stage2_sample_risk":
             raise RuntimeError(
-                "Flow teacher uses the old aggregate Stage2 normalization for dynamic R_imp(t). "
+                "Flow teacher uses a stale dynamic-risk normalization for R_imp(t). "
                 "Retrain Stage 2.5 before inference-time Flow intervention."
             )
         self.static_cond_dim = int(self.ckpt.get("static_cond_dim", self.cond_dim - 1 if self.use_dynamic_r_imp else self.cond_dim))

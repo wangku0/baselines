@@ -53,8 +53,6 @@ def score_model_with_context(model, processor, controller, config, samples: list
     rows = []
     for sample in targets:
         baseline = baselines.get(str(sample["id"]))
-        if baseline is None:
-            raise RuntimeError(f"Missing implicit baseline for {sample['id']} ({sample.get('sample_type')})")
         explicit_risk, group_id = _sample_context(sample)
         with controller.context(explicit_risk=explicit_risk, group_id=group_id):
             raw, before_clip, norm = _implicit_for_sample(
@@ -76,9 +74,13 @@ def score_model_with_context(model, processor, controller, config, samples: list
                 "pair_id": sample.get("pair_id"),
                 "image_path": sample.get("image_path"),
                 "instruction": sample.get("instruction"),
-                "baseline_sample_id": baseline.get("id"),
-                "baseline_sample_type": baseline.get("sample_type"),
-                "safeNb_sample_id": baseline.get("id") if baseline.get("sample_type") == "safe_neighbor" else None,
+                "baseline_sample_id": baseline.get("id") if baseline else None,
+                "baseline_sample_type": baseline.get("sample_type") if baseline else None,
+                "safeNb_sample_id": (
+                    baseline.get("id")
+                    if baseline and baseline.get("sample_type") == "safe_neighbor"
+                    else None
+                ),
                 "R_implicit_raw": raw,
                 "R_implicit_norm_before_clip": before_clip,
                 "R_implicit_norm": norm,
@@ -180,7 +182,7 @@ def main() -> None:
     before_mean = base_summary["mean"]
     after_mean = after_summary["mean"]
     summary = {
-        "definition": "prompt-level paired harmful minus safeNb risk-subspace activation",
+        "definition": "sample-level Stage2 R_implicit_norm risk-subspace activation",
         "method": args.method_name,
         "split": args.split,
         "scope": args.scope,

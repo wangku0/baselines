@@ -50,7 +50,7 @@ risk_space:
 
 stage1_5:
   enabled: true
-  score_modes: ["paired_delta_positive"]
+  score_modes: ["centered_positive"]
   k_values: [1, 2, 4, 8]
   layer_ablation:
     enabled: true
@@ -93,7 +93,7 @@ stage2:
       safety_redirection_bonus: -0.1
     clamp_to_01: true
   implicit_risk:
-    score_mode: "paired_delta_positive"
+    score_mode: "centered_positive"
     k: 2
     layers: [12, 16, 20, 24]
     use_stage1_5_recommended: true
@@ -134,11 +134,9 @@ flow_matching:
     last_weight: 0.5
     exclude_eos: true
   dynamic_risk_normalization:
-    method: "per_layer_safe_harmful_percentile"
-    safe_percentile: 95
-    harmful_percentile: 95
+    method: "stage2_sample_risk"
     clip: true
-    filename: "dynamic_implicit_normalization.json"
+    filename: "implicit_normalization.json"
   teacher:
     type: "conditional_hidden_rectified_flow"
     hidden_width: 1024
@@ -175,7 +173,7 @@ stage3:
     offload_folder: "integrations/my_method/outputs/offload"
   risk_space:
     risk_basis_path: "integrations/my_method/outputs/risk_space/risk_basis.pt"
-    score_mode: "paired_delta_positive"
+    score_mode: "centered_positive"
     k: 2
     risk_layers: [20]
     use_stage1_5_recommended: true

@@ -98,30 +98,35 @@ def load_stage2_implicit_normalization(config: dict) -> tuple[float, float, bool
 
 
 def load_dynamic_implicit_normalization(config: dict) -> tuple[Dict[int, float], Dict[int, float], bool]:
-    flow_cfg = config.get("flow_matching", {})
-    output_dir = flow_cfg.get("output_dir", "integrations/my_method/outputs/stage2_5_flow")
-    filename = flow_cfg.get("dynamic_risk_normalization", {}).get(
-        "filename", "dynamic_implicit_normalization.json"
+    """Load Stage2 implicit-risk normalization for dynamic Flow conditioning.
+
+    The dynamic hidden state is still observed one layer at a time, but its raw
+    score and normalization now use the same risk-space definition and global
+    train-set bounds as Stage2 ``R_implicit_norm``.
+    """
+    metrics_dir = config.get("stage2", {}).get("outputs", {}).get(
+        "metrics_dir", "integrations/my_method/outputs/metrics/stage2"
     )
-    path = resolve_path(config, str(Path(output_dir) / filename))
+    path = resolve_path(config, str(Path(metrics_dir) / "implicit_normalization.json"))
     if not path.exists():
-        raise FileNotFoundError(
-            f"Missing per-layer dynamic implicit-risk normalization: {path}. "
-            "Rebuild Flow features and retrain the Flow teacher."
-        )
+        raise FileNotFoundError(f"Missing Stage2 implicit normalization: {path}. Run Stage 2 first.")
     data = json.load(path.open("r", encoding="utf-8"))
-    layers = data.get("layers") or {}
+    settings = data.get("implicit_settings") or {}
+    layers = [int(x) for x in settings.get("layers", [])]
     if not layers:
-        raise ValueError(f"Dynamic implicit-risk normalization has no layer statistics: {path}")
-    lower = {int(layer): float(values["lower_value"]) for layer, values in layers.items()}
-    upper = {int(layer): float(values["upper_value"]) for layer, values in layers.items()}
-    for layer in lower:
-        if upper[layer] <= lower[layer]:
-            raise ValueError(
-                f"Invalid dynamic implicit-risk bounds for layer {layer}: "
-                f"lower={lower[layer]}, upper={upper[layer]}"
-            )
-    return lower, upper, bool(data.get("clip", True))
+        layers = [int(x) for x in config.get("stage3", {}).get("risk_space", {}).get("risk_layers", [])]
+    if not layers:
+        raise ValueError(f"Stage2 implicit normalization does not record risk layers: {path}")
+    lower_value = float(data["lower_value"])
+    upper_value = float(data["upper_value"])
+    if upper_value <= lower_value:
+        raise ValueError(
+            f"Invalid Stage2 implicit-risk bounds: lower={lower_value}, upper={upper_value}"
+        )
+    lower = {int(layer): lower_value for layer in layers}
+    upper = {int(layer): upper_value for layer in layers}
+    clip = bool(data.get("clip", True) or config.get("stage2", {}).get("normalization", {}).get("clip", True))
+    return lower, upper, clip
 
 
 def normalize_implicit_risk_value(raw: torch.Tensor, lower: float, upper: float, *, clip: bool = True) -> torch.Tensor:
@@ -129,6 +134,14 @@ def normalize_implicit_risk_value(raw: torch.Tensor, lower: float, upper: float,
     if clip:
         norm = torch.clamp(norm, 0.0, 1.0)
     return norm
+
+
+def risk_score_from_coefficients(coeff: torch.Tensor, score_mode: str) -> torch.Tensor:
+    if score_mode.endswith("_signed"):
+        return coeff.mean(dim=-1, keepdim=True)
+    if score_mode.endswith("_positive"):
+        return torch.linalg.vector_norm(torch.relu(coeff), ord=2, dim=-1, keepdim=True)
+    return torch.linalg.vector_norm(coeff, ord=2, dim=-1, keepdim=True)
 
 
 def dynamic_implicit_risk_norm(
@@ -162,10 +175,10 @@ def dynamic_implicit_risk_norm(
             raise KeyError(
                 f"Dynamic implicit-risk normalization missing layer {layer}; "
                 f"available layers={sorted(lower)}"
-            )
+        )
         mask = layer_id == int(layer)
         coeff = compute_risk_coefficients(x[mask], layer, recommended, risk_basis, safe_center)
-        raw = coeff.norm(dim=-1, keepdim=True)
+        raw = risk_score_from_coefficients(coeff, str(recommended.recommended_score_mode))
         out[mask] = normalize_implicit_risk_value(
             raw,
             lower[layer],
