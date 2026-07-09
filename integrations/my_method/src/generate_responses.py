@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from .data_loader import RETAIN_FIELDS, _load_json_tolerant, load_dataset
 from .model_utils import infer_input_device, load_model_and_processor, prepare_vl_inputs
+from .stage3_generation import _batch_prompt_inputs, _decode_batch_new_tokens
 from .utils import cuda_oom_help, logger, read_jsonl, resolve_path, write_jsonl
 
 
@@ -123,6 +124,7 @@ def generate_responses_for_split(
     max_samples: Optional[int] = None,
     force_regenerate: bool = False,
     model_path_override: Optional[str] = None,
+    model_bundle: Optional[Dict[str, Any]] = None,
 ) -> Path:
     gen_cfg = config.get("stage2", {}).get("generation", {})
     out_path = generation_path(config, split)
@@ -143,30 +145,47 @@ def generate_responses_for_split(
         )
 
     samples = load_dataset(config, split=split, max_samples=max_samples)
-    model_cfg = _model_config_for_generation(config, model_path_override)
-    model, processor = load_model_and_processor(model_cfg)
+    if model_bundle is not None and model_bundle.get("model") is not None:
+        model = model_bundle["model"]
+        processor = model_bundle["processor"]
+    else:
+        model_cfg = _model_config_for_generation(config, model_path_override)
+        model, processor = load_model_and_processor(model_cfg)
+        if model_bundle is not None:
+            model_bundle["model"] = model
+            model_bundle["processor"] = processor
     device = infer_input_device(model)
     model_path = model_path_override or gen_cfg.get("model_path") or config["model"]["local_path"]
+    batch_size = max(1, int(gen_cfg.get("generation_batch_size", gen_cfg.get("batch_size", 1))))
+    max_pixels = int(config.get("hidden_states", {}).get("max_pixels") or 200704)
+    tokenizer = getattr(processor, "tokenizer", None)
+    if batch_size > 1 and tokenizer is not None:
+        tokenizer.padding_side = "left"
+    logger.info("Stage 2 generation split=%s batch_size=%d max_pixels=%d", split, batch_size, max_pixels)
 
     records = []
-    for sample in tqdm(samples, desc=f"generate {split} responses"):
-        record = {
-            "sample_id": sample["id"],
-            "split": split,
-            "sample_type": sample["sample_type"],
-            "pair_id": sample.get("pair_id"),
-            "category": sample.get("category"),
-            "keyword": sample.get("keyword"),
-            "image_path": sample.get("image_path"),
-            "instruction": sample.get("instruction"),
-            "reference_response": sample.get("response"),
-            "generated_response": None,
-            "generation_error": None,
-            "model_path": model_path,
-            "response_source": "generated",
-        }
+    for start in tqdm(range(0, len(samples), batch_size), desc=f"generate {split} responses"):
+        batch = samples[start : start + batch_size]
+        batch_records = [
+            {
+                "sample_id": sample["id"],
+                "split": split,
+                "sample_type": sample["sample_type"],
+                "pair_id": sample.get("pair_id"),
+                "category": sample.get("category"),
+                "keyword": sample.get("keyword"),
+                "image_path": sample.get("image_path"),
+                "instruction": sample.get("instruction"),
+                "reference_response": sample.get("response"),
+                "generated_response": None,
+                "generation_error": None,
+                "model_path": model_path,
+                "response_source": "generated",
+            }
+            for sample in batch
+        ]
         try:
-            inputs = prepare_vl_inputs(processor, sample["image_path"], sample["instruction"], device)
+            inputs = _batch_prompt_inputs(processor, batch, device, max_pixels=max_pixels)
             generate_kwargs = {
                 "max_new_tokens": int(gen_cfg.get("max_new_tokens", 256)),
                 "do_sample": bool(gen_cfg.get("do_sample", False)),
@@ -174,21 +193,32 @@ def generate_responses_for_split(
             }
             if generate_kwargs["do_sample"]:
                 generate_kwargs["temperature"] = max(float(gen_cfg.get("temperature", 0.0)), 1e-6)
-            with torch.no_grad():
+            with torch.inference_mode():
                 generated_ids = model.generate(**inputs, **generate_kwargs)
-            record["generated_response"] = _decode_new_tokens(processor, inputs, generated_ids)
-        except RuntimeError as exc:
+            decoded = _decode_batch_new_tokens(processor, inputs, generated_ids)
+            for record, response in zip(batch_records, decoded):
+                record["generated_response"] = response
+        except Exception as exc:
             message = str(exc)
-            if "out of memory" in message.lower():
+            if isinstance(exc, RuntimeError) and "out of memory" in message.lower():
                 message = f"{message}\n{cuda_oom_help()}"
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-            logger.warning("Generation failed for sample_id=%s: %s", sample["id"], message)
-            record["generation_error"] = message
-        except Exception as exc:
-            logger.warning("Generation failed for sample_id=%s: %s", sample["id"], exc)
-            record["generation_error"] = str(exc)
-        records.append(record)
+            logger.warning("Batch generation failed at split=%s start=%d: %s", split, start, message)
+            if batch_size > 1:
+                for sample, record in zip(batch, batch_records):
+                    try:
+                        inputs = prepare_vl_inputs(processor, sample["image_path"], sample["instruction"], device)
+                        with torch.inference_mode():
+                            generated_ids = model.generate(**inputs, **generate_kwargs)
+                        record["generated_response"] = _decode_new_tokens(processor, inputs, generated_ids)
+                    except Exception as inner_exc:
+                        record["generation_error"] = str(inner_exc)
+                        logger.warning("Fallback generation failed for sample_id=%s: %s", sample["id"], inner_exc)
+            else:
+                for record in batch_records:
+                    record["generation_error"] = message
+        records.extend(batch_records)
 
     write_jsonl(records, out_path)
     logger.info("Saved %d generation records to %s", len(records), out_path)

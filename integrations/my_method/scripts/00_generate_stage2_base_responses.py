@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--split", choices=["train", "val", "both"], default="both")
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--model_path", default=None)
+    parser.add_argument("--generation_batch_size", type=int, default=None)
     parser.add_argument(
         "--force",
         action="store_true",
@@ -44,6 +45,10 @@ def main() -> None:
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    if args.generation_batch_size is not None:
+        config.setdefault("stage2", {}).setdefault("generation", {})["generation_batch_size"] = max(
+            1, int(args.generation_batch_size)
+        )
     response_source = str(config.get("stage2", {}).get("response_source", "dataset"))
     if response_source != "generate":
         raise ValueError(
@@ -53,6 +58,7 @@ def main() -> None:
 
     splits = ("train", "val") if args.split == "both" else (args.split,)
     outputs = {}
+    model_bundle = {}
     for split in splits:
         outputs[split] = generate_responses_for_split(
             config,
@@ -60,8 +66,10 @@ def main() -> None:
             max_samples=args.max_samples,
             force_regenerate=args.force,
             model_path_override=args.model_path,
+            model_bundle=model_bundle,
         )
-        release_model_memory()
+    model_bundle.clear()
+    release_model_memory()
 
     print("Stage 2 Base responses generated:")
     for split, path in outputs.items():
