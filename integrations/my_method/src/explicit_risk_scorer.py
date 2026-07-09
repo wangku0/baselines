@@ -159,8 +159,11 @@ class LlamaGuard2GGUFScorer:
         self.max_input_tokens = int(guard_cfg.get("max_input_tokens", 4096))
         self.batch_size = 1
         self.guard_cfg = guard_cfg
+        configured_model_path = Path(str(self.model_id)).expanduser()
+        local_model_path = str(configured_model_path) if configured_model_path.is_file() else None
         self.classifier = LocalLlamaGuard(
-            repo_id=self.model_id,
+            model_path=local_model_path,
+            repo_id=self.model_id if local_model_path is None else "QuantFactory/Meta-Llama-Guard-2-8B-GGUF",
             filename=self.filename,
             cache_dir=guard_cfg.get("cache_dir"),
             n_ctx=int(guard_cfg.get("n_ctx", self.max_input_tokens)),
