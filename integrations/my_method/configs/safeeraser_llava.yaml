@@ -16,8 +16,7 @@ model:
   local_files_only: false
   cache_dir: null
   max_memory:
-    0: "13GiB"
-    1: "13GiB"
+    0: "24GiB"
     cpu: "28GiB"
   offload_folder: "integrations/my_method/outputs/offload"
 
@@ -163,8 +162,7 @@ stage3:
     device_map: "auto"
     trust_remote_code: true
     max_memory:
-      0: "13GiB"
-      1: "13GiB"
+      0: "24GiB"
       cpu: "28GiB"
     offload_folder: "integrations/my_method/outputs/offload"
   risk_space:
