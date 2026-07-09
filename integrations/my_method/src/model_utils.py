@@ -158,7 +158,22 @@ def load_model_and_processor(config: Dict[str, Any], model_path_override: Option
         **common_kwargs,
     }
     if model_cfg.get("max_memory") is not None:
-        kwargs["max_memory"] = model_cfg["max_memory"]
+        visible_cuda_devices = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        max_memory = {}
+        ignored_devices = []
+        for raw_device, limit in model_cfg["max_memory"].items():
+            device = int(raw_device) if isinstance(raw_device, str) and raw_device.isdigit() else raw_device
+            if isinstance(device, int) and not 0 <= device < visible_cuda_devices:
+                ignored_devices.append(device)
+                continue
+            max_memory[device] = limit
+        if ignored_devices:
+            logger.warning(
+                "Ignoring max_memory entries for unavailable CUDA devices %s; visible logical devices are %s.",
+                sorted(set(ignored_devices)),
+                list(range(visible_cuda_devices)),
+            )
+        kwargs["max_memory"] = max_memory
     if model_cfg.get("offload_folder") is not None:
         offload_folder = resolve_path(config, model_cfg["offload_folder"])
         offload_folder.mkdir(parents=True, exist_ok=True)
