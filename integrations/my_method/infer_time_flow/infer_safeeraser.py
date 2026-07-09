@@ -98,6 +98,11 @@ def main() -> None:
     parser.add_argument("--risk_gate_threshold", type=float, default=0.0)
     parser.add_argument("--risk_gate_mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max_delta_norm_ratio", type=float, default=0.20)
+    parser.add_argument(
+        "--numerical_fallback_ratios",
+        default="",
+        help="Comma-separated max-delta ratios retried after a numerical generation error, e.g. 5,2.",
+    )
     parser.add_argument("--risk_trace_max_records", type=int, default=200000)
     parser.add_argument("--no_prefill_intervention", action="store_true")
     parser.add_argument("--no_decode_intervention", action="store_true")
@@ -135,6 +140,13 @@ def main() -> None:
         intervene_on_decode=not args.no_decode_intervention,
     )
     controller.register()
+    fallback_ratios = [
+        float(value.strip())
+        for value in args.numerical_fallback_ratios.split(",")
+        if value.strip()
+    ]
+    if any(value < 0 for value in fallback_ratios):
+        raise ValueError("--numerical_fallback_ratios values must be >= 0.")
 
     rows = json.loads(Path(args.eval_file).read_text(encoding="utf-8"))
     results = []
@@ -156,15 +168,41 @@ def main() -> None:
         inputs = _move_inputs(inputs, input_device, model.dtype)
         preds = []
         for _ in range(num_responses):
-            with controller.enabled(explicit_risk=explicit_risk, group_id=group_id):
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=1.0,
-                    top_p=0.9,
-                    num_beams=1,
-                )
+            primary_ratio = controller.max_delta_norm_ratio
+            retry_ratios = [primary_ratio] + [
+                ratio for ratio in fallback_ratios if ratio != primary_ratio
+            ]
+            for attempt, ratio in enumerate(retry_ratios):
+                controller.max_delta_norm_ratio = ratio
+                try:
+                    with controller.enabled(explicit_risk=explicit_risk, group_id=group_id):
+                        output = model.generate(
+                            **inputs,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=True,
+                            temperature=1.0,
+                            top_p=0.9,
+                            num_beams=1,
+                        )
+                    break
+                except RuntimeError as exc:
+                    message = str(exc).lower()
+                    numerical_error = (
+                        "probability tensor contains" in message
+                        and ("inf" in message or "nan" in message or "element < 0" in message)
+                    )
+                    if not numerical_error or attempt + 1 >= len(retry_ratios):
+                        raise
+                    controller.stats.numerical_retries += 1
+                    next_ratio = retry_ratios[attempt + 1]
+                    print(
+                        "Numerical generation error at "
+                        f"max_delta_norm_ratio={ratio}; retrying current response with {next_ratio}."
+                    )
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                finally:
+                    controller.max_delta_norm_ratio = primary_ratio
             preds.append(_decode(processor, output, inputs["input_ids"].shape[1]))
         return preds
 

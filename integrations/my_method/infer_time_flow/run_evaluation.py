@@ -35,6 +35,11 @@ def main() -> None:
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
     parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
+    parser.add_argument(
+        "--numerical-fallback-ratios",
+        default="",
+        help="Comma-separated max-delta ratios retried after numerical generation errors.",
+    )
     parser.add_argument("--risk-trace-max-records", type=int, default=200000)
     parser.add_argument("--no-prefill-intervention", action="store_true")
     parser.add_argument("--no-decode-intervention", action="store_true")
@@ -76,6 +81,8 @@ def main() -> None:
             args.risk_gate_mode,
             "--max_delta_norm_ratio",
             str(args.max_delta_norm_ratio),
+            "--numerical_fallback_ratios",
+            args.numerical_fallback_ratios,
             "--risk_trace_max_records",
             str(args.risk_trace_max_records),
         ]

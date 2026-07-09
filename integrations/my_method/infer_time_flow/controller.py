@@ -32,6 +32,8 @@ class FlowInterventionStats:
     mean_delta_norm_sum: float = 0.0
     risk_gate_mode: str = "fused"
     trace_dropped: int = 0
+    numerical_skips: int = 0
+    numerical_retries: int = 0
 
     def to_dict(self) -> dict:
         denom = max(self.calls, 1)
@@ -45,6 +47,8 @@ class FlowInterventionStats:
             "mean_delta_norm": self.mean_delta_norm_sum / denom,
             "risk_gate_mode": self.risk_gate_mode,
             "trace_dropped": self.trace_dropped,
+            "numerical_skips": self.numerical_skips,
+            "numerical_retries": self.numerical_retries,
         }
 
 
@@ -175,6 +179,7 @@ class InferenceTimeFlowController:
         gate: float,
         active: bool,
         delta_norm: float,
+        skip_reason: Optional[str] = None,
     ) -> None:
         if self.risk_trace_max_records <= 0:
             return
@@ -193,6 +198,7 @@ class InferenceTimeFlowController:
                 "gate": float(gate),
                 "active": bool(active),
                 "delta_norm": float(delta_norm),
+                "skip_reason": skip_reason,
                 "strength": self.strength,
                 "risk_gate_threshold": self.risk_gate_threshold,
                 "max_delta_norm_ratio": self.max_delta_norm_ratio,
@@ -254,13 +260,29 @@ class InferenceTimeFlowController:
         x = h.detach().to(device=self.device, dtype=next(self.teacher.parameters()).dtype)
         cond, risk = self._condition(x, hidden_layer)
         explicit_risk = torch.tensor([[self._context_explicit_risk]], device=risk.device, dtype=risk.dtype)
+        call_index = self.stats.calls + 1
+        if not torch.isfinite(x).all() or not torch.isfinite(cond).all() or not torch.isfinite(risk).all():
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()) if risk.numel() == 1 else float("nan"),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float("nan"),
+                gate=0.0,
+                active=False,
+                delta_norm=0.0,
+                skip_reason="nonfinite_condition",
+            )
+            self.stats.calls += 1
+            self.stats.numerical_skips += 1
+            return h
         if self.risk_gate_mode == "implicit":
             total_risk = risk
         else:
             total_risk = 0.5 * explicit_risk + 0.5 * risk
         threshold = self.risk_gate_threshold
         gate = torch.clamp((total_risk - threshold) / max(1.0 - threshold, 1e-6), 0.0, 1.0)
-        call_index = self.stats.calls + 1
         if float(gate.item()) <= 0.0 or self.strength == 0.0:
             self._append_trace(
                 call_index=call_index,
@@ -282,13 +304,61 @@ class InferenceTimeFlowController:
         layer_id = torch.tensor([hidden_layer], device=self.device, dtype=torch.long)
         with torch.no_grad():
             velocity = self.teacher(x[None, :], t, cond, layer_id)[0]
+        if not torch.isfinite(velocity).all():
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float(total_risk.item()),
+                gate=float(gate.item()),
+                active=False,
+                delta_norm=0.0,
+                skip_reason="nonfinite_velocity",
+            )
+            self.stats.calls += 1
+            self.stats.numerical_skips += 1
+            return h
         delta = self.strength * gate[0, 0].to(velocity.dtype) * velocity
+        if not torch.isfinite(delta).all():
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float(total_risk.item()),
+                gate=float(gate.item()),
+                active=False,
+                delta_norm=0.0,
+                skip_reason="nonfinite_delta",
+            )
+            self.stats.calls += 1
+            self.stats.numerical_skips += 1
+            return h
         if self.max_delta_norm_ratio > 0:
             max_norm = self.max_delta_norm_ratio * x.norm().clamp_min(1e-6)
             delta_norm = delta.norm()
             if delta_norm > max_norm:
                 delta = delta * (max_norm / delta_norm)
         out = (x + delta).to(device=original_device, dtype=original_dtype)
+        if not torch.isfinite(out).all():
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float(total_risk.item()),
+                gate=float(gate.item()),
+                active=False,
+                delta_norm=float(delta.norm().detach().cpu()),
+                skip_reason="nonfinite_output",
+            )
+            self.stats.calls += 1
+            self.stats.numerical_skips += 1
+            return h
         delta_norm_value = float(delta.norm().detach().cpu())
         self._append_trace(
             call_index=call_index,
