@@ -147,6 +147,12 @@ def main() -> None:
             if not bool(existing_dynamic.get("R_imp_norm_t", False)):
                 print("[reuse_existing] Stage 2.5 Flow teacher: existing teacher lacks dynamic R_imp_norm(t); recomputing.")
                 force_for_target_mismatch = True
+            elif existing_dynamic.get("normalization") != "per_layer_safe_harmful_percentile":
+                print(
+                    "[reuse_existing] Stage 2.5 Flow teacher: existing teacher uses the old "
+                    "dynamic-risk normalization; recomputing."
+                )
+                force_for_target_mismatch = True
             existing_target = existing.get("flow_target")
             if args.flow_target is not None and not existing_target:
                 print("[reuse_existing] Stage 2.5 Flow teacher: existing teacher has no flow_target metadata; recomputing.")

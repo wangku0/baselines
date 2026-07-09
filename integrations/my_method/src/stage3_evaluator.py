@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import gc
+import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -116,8 +119,6 @@ def _load_norm(config: Dict[str, Any]) -> tuple[float, float, bool]:
     path = resolve_path(config, str(Path(metrics_dir) / "implicit_normalization.json"))
     if not path.exists():
         raise FileNotFoundError(f"Missing Stage 2 implicit normalization: {path}. Run Stage 2 first.")
-    import json
-
     data = json.load(path.open("r", encoding="utf-8"))
     implicit_settings = data.get("implicit_settings", {})
     norm_layers = [int(x) for x in implicit_settings.get("layers", [])]
@@ -146,6 +147,74 @@ def _load_norm(config: Dict[str, Any]) -> tuple[float, float, bool]:
             raise ValueError(message)
         logger.warning(message)
     return float(data["lower_value"]), float(data["upper_value"]), bool(data.get("clip", True) or config["stage2"]["normalization"].get("clip", True))
+
+
+def load_stage2_implicit_scoring_context(
+    config: Dict[str, Any],
+    device: torch.device,
+) -> tuple[Dict[str, Any], float, float, bool, Any, Dict[str, Dict[int, torch.Tensor]]]:
+    """Load the exact risk definition persisted by Stage 2.
+
+    Stage 2 normalization is only meaningful for the basis, layers, k and score
+    mode that produced it. Treat those persisted settings as authoritative
+    during final evaluation instead of independently resolving Stage 3 values.
+    """
+    metrics_dir = config.get("stage2", {}).get("outputs", {}).get(
+        "metrics_dir", "integrations/my_method/outputs/metrics/stage2"
+    )
+    norm_path = resolve_path(config, str(Path(metrics_dir) / "implicit_normalization.json"))
+    if not norm_path.exists():
+        raise FileNotFoundError(f"Missing Stage 2 implicit normalization: {norm_path}. Run Stage 2 first.")
+
+    data = json.load(norm_path.open("r", encoding="utf-8"))
+    settings = data.get("implicit_settings") or {}
+    layers = [int(x) for x in settings.get("layers", [])]
+    if not layers:
+        raise ValueError(f"Stage 2 normalization does not record implicit_settings.layers: {norm_path}")
+    k = int(settings.get("k", 0))
+    if k <= 0:
+        raise ValueError(f"Stage 2 normalization has invalid implicit_settings.k={k!r}: {norm_path}")
+    score_mode = str(settings.get("score_mode") or "")
+    if not score_mode:
+        raise ValueError(f"Stage 2 normalization does not record implicit_settings.score_mode: {norm_path}")
+
+    basis_setting = settings.get("risk_basis_path")
+    if basis_setting:
+        basis_path = resolve_path(config, str(basis_setting))
+    else:
+        risk_space_dir = resolve_path(config, config["outputs"]["risk_space_dir"])
+        basis_path = risk_space_dir / f"k_{k}" / "risk_basis.pt"
+    if not basis_path.exists():
+        raise FileNotFoundError(
+            f"Stage 2 implicit risk basis not found: {basis_path}. "
+            f"Normalization source: {norm_path}"
+        )
+
+    scoring_config = copy.deepcopy(config)
+    risk_cfg = scoring_config.setdefault("stage3", {}).setdefault("risk_space", {})
+    risk_cfg["risk_basis_path"] = str(basis_path)
+    risk_cfg["risk_layers"] = layers
+    risk_cfg["k"] = k
+    risk_cfg["score_mode"] = score_mode
+
+    recommended = load_recommended_risk_config(scoring_config, allow_fallback=True)
+    recommended = replace(
+        recommended,
+        recommended_k=k,
+        recommended_score_mode=score_mode,
+        recommended_hidden_layers=layers,
+        risk_basis_path=str(basis_path),
+    )
+    risk_tensors = load_risk_tensors(scoring_config, device)
+    clip = bool(data.get("clip", True) or scoring_config["stage2"]["normalization"].get("clip", True))
+    return (
+        scoring_config,
+        float(data["lower_value"]),
+        float(data["upper_value"]),
+        clip,
+        recommended,
+        risk_tensors,
+    )
 
 
 def _implicit_baseline_samples(samples_by_id: Dict[str, Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
@@ -209,7 +278,7 @@ def _implicit_for_sample(
         out = model(**inputs, output_hidden_states=True, return_dict=True)
         baseline_out = model(**baseline_inputs, output_hidden_states=True, return_dict=True)
     scores = []
-    score_mode = str(config.get("stage3", {}).get("risk_space", {}).get("score_mode", recommended.recommended_score_mode))
+    score_mode = str(recommended.recommended_score_mode)
     for layer, basis in risk_tensors["risk_basis"].items():
         h = last_token_hidden(out, inputs, layer).to(basis.device)
         h_base = last_token_hidden(baseline_out, baseline_inputs, layer).to(basis.device)
@@ -422,7 +491,6 @@ def evaluate_stage3_unlearning(
             f"Expected config.json at: {resolved_full_model_path / 'config.json'}."
         )
 
-    lower, upper, _ = _load_norm(config)
     base_df_for_full_model = None
     if resolved_full_model_path is not None and generate_base_baseline:
         base_path = base_generations_path(config, split)
@@ -431,7 +499,9 @@ def evaluate_stage3_unlearning(
         base_model, base_processor = load_base_model_and_processor(config, model_path_override)
         base_model.eval()
         base_device = infer_input_device(base_model)
-        base_risk_tensors = load_risk_tensors(config, base_device)
+        base_scoring_config, lower, upper, _, _, base_risk_tensors = load_stage2_implicit_scoring_context(
+            config, base_device
+        )
         if base_rows is None:
             base_rows = generate_for_samples(
                 base_model,
@@ -452,7 +522,7 @@ def evaluate_stage3_unlearning(
             samples_by_id,
             base_model,
             base_processor,
-            config,
+            base_scoring_config,
             base_risk_tensors,
             lower,
             upper,
@@ -488,11 +558,11 @@ def evaluate_stage3_unlearning(
         after_source = "generated_lora"
     model.eval()
     device = infer_input_device(model)
-    risk_tensors = load_risk_tensors(config, device)
+    scoring_config, lower, upper, _, _, risk_tensors = load_stage2_implicit_scoring_context(config, device)
 
     gen_path = generations_dir / f"{split}_unlearned_generations.jsonl"
     rows = generate_for_samples(model, processor, samples, config, split, gen_path, after_source)
-    df = _score_rows(rows, samples_by_id, model, processor, config, risk_tensors, lower, upper)
+    df = _score_rows(rows, samples_by_id, model, processor, scoring_config, risk_tensors, lower, upper)
     score_path = metrics_dir / f"{split}_unlearned_risk_scores.csv"
     df.to_csv(score_path, index=False, encoding="utf-8-sig")
     write_jsonl(df.to_dict(orient="records"), metrics_dir / f"{split}_unlearned_risk_scores.jsonl")

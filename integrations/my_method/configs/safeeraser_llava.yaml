@@ -133,6 +133,12 @@ flow_matching:
     mean_weight: 0.5
     last_weight: 0.5
     exclude_eos: true
+  dynamic_risk_normalization:
+    method: "per_layer_safe_harmful_percentile"
+    safe_percentile: 95
+    harmful_percentile: 95
+    clip: true
+    filename: "dynamic_implicit_normalization.json"
   teacher:
     type: "conditional_hidden_rectified_flow"
     hidden_width: 1024

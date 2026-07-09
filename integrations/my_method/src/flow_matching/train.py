@@ -12,7 +12,7 @@ from ..risk_space.recommended_config import RecommendedRiskConfig
 from ..utils import ensure_dir, logger, resolve_path, save_json, set_seed
 from .features import _load_risk_basis, build_flow_features
 from .model import FlowVectorField, euler_integrate_flow_trainable
-from .utils import dynamic_implicit_risk_norm, load_stage2_implicit_normalization
+from .utils import dynamic_implicit_risk_norm, load_dynamic_implicit_normalization
 
 
 def _batch(examples, indices, device):
@@ -31,8 +31,8 @@ def _append_dynamic_risk_condition(
     recommended: RecommendedRiskConfig,
     risk_basis: Dict[int, torch.Tensor],
     safe_center: Dict[int, torch.Tensor],
-    lower: float,
-    upper: float,
+    lower: Dict[int, float],
+    upper: Dict[int, float],
     clip: bool,
 ) -> torch.Tensor:
     r_imp_norm_t = dynamic_implicit_risk_norm(
@@ -68,7 +68,7 @@ def train_flow_teacher(
     rec = data["recommended"]
     rec_cfg = RecommendedRiskConfig(**rec)
     risk_basis, safe_center = _load_risk_basis(Path(rec_cfg.risk_basis_path))
-    lower, upper, norm_clip = load_stage2_implicit_normalization(config)
+    lower, upper, norm_clip = load_dynamic_implicit_normalization(config)
     teacher_cfg = flow_cfg.get("teacher", {})
     losses_cfg = flow_cfg.get("teacher_losses", {})
     hidden_dim = int(data["hidden_dim"])

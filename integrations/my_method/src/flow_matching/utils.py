@@ -97,6 +97,33 @@ def load_stage2_implicit_normalization(config: dict) -> tuple[float, float, bool
     return float(data["lower_value"]), float(data["upper_value"]), clip
 
 
+def load_dynamic_implicit_normalization(config: dict) -> tuple[Dict[int, float], Dict[int, float], bool]:
+    flow_cfg = config.get("flow_matching", {})
+    output_dir = flow_cfg.get("output_dir", "integrations/my_method/outputs/stage2_5_flow")
+    filename = flow_cfg.get("dynamic_risk_normalization", {}).get(
+        "filename", "dynamic_implicit_normalization.json"
+    )
+    path = resolve_path(config, str(Path(output_dir) / filename))
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing per-layer dynamic implicit-risk normalization: {path}. "
+            "Rebuild Flow features and retrain the Flow teacher."
+        )
+    data = json.load(path.open("r", encoding="utf-8"))
+    layers = data.get("layers") or {}
+    if not layers:
+        raise ValueError(f"Dynamic implicit-risk normalization has no layer statistics: {path}")
+    lower = {int(layer): float(values["lower_value"]) for layer, values in layers.items()}
+    upper = {int(layer): float(values["upper_value"]) for layer, values in layers.items()}
+    for layer in lower:
+        if upper[layer] <= lower[layer]:
+            raise ValueError(
+                f"Invalid dynamic implicit-risk bounds for layer {layer}: "
+                f"lower={lower[layer]}, upper={upper[layer]}"
+            )
+    return lower, upper, bool(data.get("clip", True))
+
+
 def normalize_implicit_risk_value(raw: torch.Tensor, lower: float, upper: float, *, clip: bool = True) -> torch.Tensor:
     norm = (raw - float(lower)) / max(float(upper) - float(lower), 1e-6)
     if clip:
@@ -110,12 +137,12 @@ def dynamic_implicit_risk_norm(
     recommended: RecommendedRiskConfig,
     risk_basis: Dict[int, torch.Tensor],
     safe_center: Optional[Dict[int, torch.Tensor]],
-    lower: float,
-    upper: float,
+    lower: Dict[int, float],
+    upper: Dict[int, float],
     *,
     clip: bool = True,
 ) -> torch.Tensor:
-    """Return Stage2-normalized implicit risk for current flow states.
+    """Return per-layer calibrated implicit risk for current flow states.
 
     ``x`` is the current hidden state on the flow path, so this computes the
     continuous R_imp(t) used to condition the velocity field.
@@ -130,10 +157,21 @@ def dynamic_implicit_risk_norm(
 
     out = torch.empty((x.shape[0], 1), device=x.device, dtype=x.dtype)
     for layer in torch.unique(layer_id).tolist():
+        layer = int(layer)
+        if layer not in lower or layer not in upper:
+            raise KeyError(
+                f"Dynamic implicit-risk normalization missing layer {layer}; "
+                f"available layers={sorted(lower)}"
+            )
         mask = layer_id == int(layer)
-        coeff = compute_risk_coefficients(x[mask], int(layer), recommended, risk_basis, safe_center)
+        coeff = compute_risk_coefficients(x[mask], layer, recommended, risk_basis, safe_center)
         raw = coeff.norm(dim=-1, keepdim=True)
-        out[mask] = normalize_implicit_risk_value(raw, lower, upper, clip=clip).to(dtype=x.dtype)
+        out[mask] = normalize_implicit_risk_value(
+            raw,
+            lower[layer],
+            upper[layer],
+            clip=clip,
+        ).to(dtype=x.dtype)
     return out
 
 

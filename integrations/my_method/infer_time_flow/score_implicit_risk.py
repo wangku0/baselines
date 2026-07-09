@@ -27,10 +27,8 @@ from scripts.score_implicit_risk import (
 )
 from src.data_loader import load_dataset
 from src.model_utils import infer_input_device
-from src.risk_space.recommended_config import load_recommended_risk_config
-from src.stage3_evaluator import _implicit_for_sample, _load_norm
+from src.stage3_evaluator import _implicit_for_sample, load_stage2_implicit_scoring_context
 from src.stage3_lora_utils import load_base_model_and_processor, sync_stage3_layers_with_recommendation
-from src.stage3_losses import load_risk_tensors
 from src.utils import load_config
 
 
@@ -48,10 +46,10 @@ def _sample_context(sample: dict) -> tuple[float, int]:
 def score_model_with_context(model, processor, controller, config, samples: list[dict], label: str, sample_types: set[str]) -> pd.DataFrame:
     baselines = _scoring_baselines(samples)
     targets = [sample for sample in samples if sample.get("sample_type") in sample_types]
-    lower, upper, _ = _load_norm(config)
-    recommended = load_recommended_risk_config(config, allow_fallback=False)
     device = infer_input_device(model)
-    risk_tensors = load_risk_tensors(config, device)
+    scoring_config, lower, upper, _, recommended, risk_tensors = load_stage2_implicit_scoring_context(
+        config, device
+    )
     rows = []
     for sample in targets:
         baseline = baselines.get(str(sample["id"]))
@@ -64,7 +62,7 @@ def score_model_with_context(model, processor, controller, config, samples: list
                 processor,
                 sample,
                 baseline,
-                config,
+                scoring_config,
                 risk_tensors,
                 lower,
                 upper,

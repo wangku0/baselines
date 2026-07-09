@@ -15,7 +15,7 @@ from .utils import (
     compute_risk_delta_coefficients,
     dynamic_implicit_risk_norm,
     lambda_flow_ramp,
-    load_stage2_implicit_normalization,
+    load_dynamic_implicit_normalization,
 )
 
 
@@ -74,8 +74,8 @@ def _append_dynamic_risk_condition(
     layer_id: torch.Tensor,
     recommended: RecommendedRiskConfig,
     risk_tensors: Dict[str, Dict[int, torch.Tensor]],
-    lower: float,
-    upper: float,
+    lower: Dict[int, float],
+    upper: Dict[int, float],
     clip: bool,
 ) -> torch.Tensor:
     r_imp_norm_t = dynamic_implicit_risk_norm(
@@ -157,6 +157,11 @@ def compute_flow_stage3_losses(
     cond_dim = int(flow_bundle["ckpt"]["cond_dim"])
     dynamic_conditioning = flow_bundle.get("ckpt", {}).get("dynamic_conditioning") or {}
     use_dynamic_r_imp = bool(dynamic_conditioning.get("R_imp_norm_t", False))
+    if use_dynamic_r_imp and dynamic_conditioning.get("normalization") != "per_layer_safe_harmful_percentile":
+        raise RuntimeError(
+            "Flow teacher uses the old aggregate Stage2 normalization for dynamic R_imp(t). "
+            "Retrain Stage 2.5 before Flow distillation."
+        )
     static_cond_dim = int(flow_bundle.get("ckpt", {}).get("static_cond_dim", cond_dim - 1 if use_dynamic_r_imp else cond_dim))
     device = next(teacher.parameters()).device
     max_pixels = config["stage3"].get("preprocessing", {}).get("max_pixels", 200704)
@@ -171,9 +176,9 @@ def compute_flow_stage3_losses(
     lambda_identity = float(flow_cfg.get("lambda_identity", 0.5))
     ode_steps = int(flow_cfg.get("ode_steps", 8))
     if use_dynamic_r_imp:
-        norm_lower, norm_upper, norm_clip = load_stage2_implicit_normalization(config)
+        norm_lower, norm_upper, norm_clip = load_dynamic_implicit_normalization(config)
     else:
-        norm_lower, norm_upper, norm_clip = 0.0, 1.0, True
+        norm_lower, norm_upper, norm_clip = {}, {}, True
 
     harmful = triplet["harmful"]
     safe = triplet["safe"]

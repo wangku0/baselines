@@ -11,7 +11,7 @@ import torch
 from .recommended_config import RecommendedRiskConfig, hidden_layers_to_lora_layers, load_recommended_risk_config
 from ..data_loader import load_dataset
 from ..flow_matching.model import FlowVectorField
-from ..flow_matching.utils import compute_risk_coefficients, dynamic_implicit_risk_norm, load_stage2_implicit_normalization
+from ..flow_matching.utils import compute_risk_coefficients, dynamic_implicit_risk_norm, load_dynamic_implicit_normalization
 from ..model_utils import infer_input_device, load_model_and_processor, prepare_vl_inputs
 from ..utils import ensure_dir, load_json, logger, resolve_path, save_json
 
@@ -456,8 +456,8 @@ def _maybe_append_selection_dynamic_risk(
     risk_basis: Dict[int, torch.Tensor],
     safe_center: Dict[int, torch.Tensor],
     flow: FlowVectorField,
-    lower: float,
-    upper: float,
+    lower: Dict[int, float],
+    upper: Dict[int, float],
     clip: bool,
 ) -> torch.Tensor:
     dynamic_cfg = getattr(flow, "_dynamic_conditioning", {}) or {}
@@ -553,9 +553,9 @@ def select_modules_by_flow_rit(
     flow = _load_flow_teacher_for_selection(config, flow_path, device)
     flow_dtype = next(flow.parameters()).dtype
     if bool((getattr(flow, "_dynamic_conditioning", {}) or {}).get("R_imp_norm_t", False)):
-        norm_lower, norm_upper, norm_clip = load_stage2_implicit_normalization(config)
+        norm_lower, norm_upper, norm_clip = load_dynamic_implicit_normalization(config)
     else:
-        norm_lower, norm_upper, norm_clip = 0.0, 1.0, True
+        norm_lower, norm_upper, norm_clip = {}, {}, True
 
     candidates = _candidate_module_names(model, config, candidate_layers)
     if not candidates:

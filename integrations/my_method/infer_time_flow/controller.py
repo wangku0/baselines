@@ -12,7 +12,7 @@ from src.flow_matching.model import FlowVectorField
 from src.flow_matching.utils import (
     compute_risk_coefficients,
     dynamic_implicit_risk_norm,
-    load_stage2_implicit_normalization,
+    load_dynamic_implicit_normalization,
 )
 from src.model_utils import infer_input_device
 from src.risk_space.recommended_config import RecommendedRiskConfig, load_recommended_risk_config
@@ -143,10 +143,15 @@ class InferenceTimeFlowController:
         if not self.block_layers:
             raise ValueError(f"No valid hidden layers for inference-time intervention: {self.hidden_layers}")
         self.risk_tensors = load_risk_tensors(self.config, self.device)
-        self.norm_lower, self.norm_upper, self.norm_clip = load_stage2_implicit_normalization(self.config)
+        self.norm_lower, self.norm_upper, self.norm_clip = load_dynamic_implicit_normalization(self.config)
         self.cond_dim = int(self.ckpt["cond_dim"])
         dynamic_cfg = self.ckpt.get("dynamic_conditioning") or {}
         self.use_dynamic_r_imp = bool(dynamic_cfg.get("R_imp_norm_t", False))
+        if self.use_dynamic_r_imp and dynamic_cfg.get("normalization") != "per_layer_safe_harmful_percentile":
+            raise RuntimeError(
+                "Flow teacher uses the old aggregate Stage2 normalization for dynamic R_imp(t). "
+                "Retrain Stage 2.5 before inference-time Flow intervention."
+            )
         self.static_cond_dim = int(self.ckpt.get("static_cond_dim", self.cond_dim - 1 if self.use_dynamic_r_imp else self.cond_dim))
         self.strength = float(strength)
         self.risk_gate_threshold = float(risk_gate_threshold)
