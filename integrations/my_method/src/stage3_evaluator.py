@@ -594,7 +594,16 @@ def evaluate_stage3_unlearning(
                     if row["response_source"] == "generated":
                         row["response_source"] = "generated_base"
             with model.disable_adapter():
-                base_df = _score_rows(base_rows, samples_by_id, model, processor, config, risk_tensors, lower, upper)
+                base_df = _score_rows(
+                    base_rows,
+                    samples_by_id,
+                    model,
+                    processor,
+                    scoring_config,
+                    risk_tensors,
+                    lower,
+                    upper,
+                )
             base_df.to_csv(metrics_dir / f"{split}_base_generated_risk_scores.csv", index=False, encoding="utf-8-sig")
         merged, comparison_summary = build_unified_evaluation(
             method="stage3_flow_lora",
