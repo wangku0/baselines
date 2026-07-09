@@ -79,7 +79,7 @@ def _stage3_model_config(config: Dict[str, Any], model_path_override: str | None
     cfg["model"]["torch_dtype"] = base.get("torch_dtype", cfg["model"].get("torch_dtype", "auto"))
     cfg["model"]["device_map"] = base.get("device_map", cfg["model"].get("device_map", "auto"))
     cfg["model"]["trust_remote_code"] = base.get("trust_remote_code", cfg["model"].get("trust_remote_code", True))
-    for key in ("local_files_only", "cache_dir", "max_memory", "offload_folder"):
+    for key in ("local_files_only", "cache_dir", "max_memory", "offload_folder", "attn_implementation"):
         if key in base:
             cfg["model"][key] = base[key]
     return cfg

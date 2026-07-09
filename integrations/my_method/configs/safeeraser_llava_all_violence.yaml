@@ -1,0 +1,6 @@
+# Full Violence train/validation data. Other settings inherit the formal config.
+base_config: safeeraser_llava.yaml
+
+dataset:
+  train_file: "integrations/my_method/outputs/data/violence_300_paired_train.json"
+  val_file: "integrations/my_method/outputs/data/violence_100_paired_val.json"

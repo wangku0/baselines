@@ -57,6 +57,11 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=233)
     parser.add_argument("--records", type=int, default=50)
+    parser.add_argument(
+        "--all-violence",
+        action="store_true",
+        help="Use every Violence record instead of selecting from the deterministic half split.",
+    )
     args = parser.parse_args()
 
     safe = load_list(args.safe_data)
@@ -67,9 +72,10 @@ def main() -> None:
     ]
     random.Random(args.seed).shuffle(violence)
     half = violence[: max(1, len(violence) // 2)]
-    selected = half[: args.records]
-    if len(selected) != args.records:
+    selected = violence if args.all_violence else half[: args.records]
+    if not args.all_violence and len(selected) != args.records:
         raise ValueError(f"Requested {args.records} records, selected {len(selected)}")
+    record_count = len(selected)
 
     paired_by_id = {row.get("image_id"): row for row in paired}
     if len(paired_by_id) != len(paired):
@@ -98,9 +104,9 @@ def main() -> None:
         raise ValueError("Dataset validation failed:\n- " + "\n- ".join(errors[:20]))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    paired_path = args.output_dir / f"violence_{args.records}_paired_train.json"
-    eval_path = args.output_dir / f"violence_{args.records}_eval.json"
-    ids_path = args.output_dir / f"violence_{args.records}_image_ids.json"
+    paired_path = args.output_dir / f"violence_{record_count}_paired_train.json"
+    eval_path = args.output_dir / f"violence_{record_count}_eval.json"
+    ids_path = args.output_dir / f"violence_{record_count}_image_ids.json"
     paired_path.write_text(json.dumps(paired_selected, ensure_ascii=False, indent=2), encoding="utf-8")
     eval_path.write_text(json.dumps(selected, ensure_ascii=False, indent=2), encoding="utf-8")
     ids_path.write_text(
@@ -111,6 +117,7 @@ def main() -> None:
         "seed": args.seed,
         "violence_records": len(violence),
         "half_records": len(half),
+        "selection_mode": "all_violence" if args.all_violence else "deterministic_half",
         "selected_records": len(selected),
         "unsafe_pairs": sum(len(row["unsafe_pairs"]) for row in paired_selected),
         "safeNb_pairs": sum(len(row["safeNb_pairs"]) for row in paired_selected),
@@ -125,7 +132,7 @@ def main() -> None:
             "image_ids": str(ids_path),
         },
     }
-    manifest_path = args.output_dir / f"violence_{args.records}_manifest.json"
+    manifest_path = args.output_dir / f"violence_{record_count}_manifest.json"
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 

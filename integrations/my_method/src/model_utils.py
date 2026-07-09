@@ -157,6 +157,9 @@ def load_model_and_processor(config: Dict[str, Any], model_path_override: Option
         "low_cpu_mem_usage": True,
         **common_kwargs,
     }
+    attn_implementation = model_cfg.get("attn_implementation")
+    if attn_implementation not in (None, "", "none", "None"):
+        kwargs["attn_implementation"] = str(attn_implementation)
     if model_cfg.get("max_memory") is not None:
         visible_cuda_devices = torch.cuda.device_count() if torch.cuda.is_available() else 0
         max_memory = {}

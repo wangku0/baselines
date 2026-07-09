@@ -12,6 +12,7 @@ model:
   model_type: "llava"
   torch_dtype: "float16"
   device_map: "auto"
+  attn_implementation: "sdpa"
   trust_remote_code: true
   local_files_only: false
   cache_dir: null
@@ -31,7 +32,7 @@ hidden_states:
   # single-sample forward passes stable on 2*T4 while preserving enough visual
   # information for risk-subspace validation.
   max_pixels: 50176
-  clear_cuda_cache_every: 50
+  clear_cuda_cache_every: 0
   max_samples: null
 
 risk_space:
@@ -160,6 +161,7 @@ stage3:
     model_path: "llava-hf/llava-1.5-7b-hf"
     torch_dtype: "float16"
     device_map: "auto"
+    attn_implementation: "sdpa"
     trust_remote_code: true
     max_memory:
       0: "24GiB"
