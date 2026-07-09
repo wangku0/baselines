@@ -138,10 +138,11 @@ def load_model_and_processor(config: Dict[str, Any], model_path_override: Option
     local_files_only = bool(model_cfg.get("local_files_only", False))
     pretrained_id, is_local = _resolve_pretrained_id(config, local_path, local_files_only)
     source_label = "local path" if is_local else "Hugging Face repo/cache"
+    effective_local_files_only = local_files_only or is_local
 
     common_kwargs: Dict[str, Any] = {
         "trust_remote_code": trust_remote_code,
-        "local_files_only": local_files_only,
+        "local_files_only": effective_local_files_only,
     }
     if model_cfg.get("cache_dir") is not None:
         cache_dir = resolve_path(config, model_cfg["cache_dir"])
