@@ -35,7 +35,8 @@ def main() -> None:
         "safeeraser_metrics": {
             "ASR": safe.get("ASR"),
             "RR": safe.get("RR"),
-            "SARR": safe.get("SARR"),
+            "SARR_sd": safe.get("SARR_sd", safe.get("SARR")),
+            "SARR_safeNb": safe.get("SARR_safeNb"),
             "ROUGE-L": safe.get("average_rouge_l_fmeasure"),
             "group_metrics": safe.get("group_metrics"),
             "counts": safe.get("counts"),
