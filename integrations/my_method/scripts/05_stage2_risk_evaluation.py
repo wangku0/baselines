@@ -43,6 +43,11 @@ def main():
     parser.add_argument("--skip_generation", action="store_true")
     parser.add_argument("--force_regenerate", action="store_true")
     parser.add_argument("--model_path", default=None)
+    parser.add_argument(
+        "--llama-guard-model-path",
+        default=None,
+        help="Override stage2.explicit_risk.llama_guard2.model_path with a local GGUF file.",
+    )
     parser.add_argument("--alpha_explicit", type=float, default=None)
     parser.add_argument("--beta_implicit", type=float, default=None)
     parser.add_argument(
@@ -71,6 +76,14 @@ def main():
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    if args.llama_guard_model_path:
+        guard_path = Path(args.llama_guard_model_path).expanduser()
+        guard_cfg = config.setdefault("stage2", {}).setdefault("explicit_risk", {}).setdefault("llama_guard2", {})
+        guard_cfg["backend"] = "llama_cpp"
+        guard_cfg["model_path"] = str(guard_path)
+        guard_cfg["filename"] = guard_path.name
+        if guard_path.parent:
+            guard_cfg["cache_dir"] = str(guard_path.parent)
     if args.layer_selection_method:
         config.setdefault("stage3", {}).setdefault("layer_selection", {})["method"] = args.layer_selection_method
         if args.layer_selection_method == "risk_transport_influence":
