@@ -56,7 +56,7 @@ stage1_5:
     enabled: true
     mode: "single_and_cumulative"
     use_k: null
-  selection_metric: "val_harmful_vs_safe_auc"
+  selection_metric: "val_balanced_harmful_vs_safe_and_retain_auc"
   min_retain_gap_constraint: false
 
 stage2:

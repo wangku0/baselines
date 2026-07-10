@@ -75,6 +75,8 @@ def _summary_row(
     safe_mean = _metric(stats, ["safe_neighbor", "mean"])
     retain_mean = _metric(stats, ["retain", "mean"])
     paired = eval_result.get("paired_analysis", {})
+    harmful_vs_safe_auc = _metric(eval_result, ["auc", "harmful_trigger_vs_safe_neighbor"])
+    harmful_vs_retain_auc = _metric(eval_result, ["auc", "harmful_trigger_vs_retain"])
     row = {
         "k": int(k),
         "score_mode": score_mode,
@@ -87,8 +89,13 @@ def _summary_row(
         "retain_mean": retain_mean,
         "harmful_minus_safe_mean": None if harmful_mean is None or safe_mean is None else float(harmful_mean - safe_mean),
         "harmful_minus_retain_mean": None if harmful_mean is None or retain_mean is None else float(harmful_mean - retain_mean),
-        "harmful_vs_safe_auc": _metric(eval_result, ["auc", "harmful_trigger_vs_safe_neighbor"]),
-        "harmful_vs_retain_auc": _metric(eval_result, ["auc", "harmful_trigger_vs_retain"]),
+        "harmful_vs_safe_auc": harmful_vs_safe_auc,
+        "harmful_vs_retain_auc": harmful_vs_retain_auc,
+        "balanced_auc": (
+            min(float(harmful_vs_safe_auc), float(harmful_vs_retain_auc))
+            if harmful_vs_safe_auc is not None and harmful_vs_retain_auc is not None
+            else None
+        ),
         "paired_mean_diff": paired.get("mean_diff"),
         "paired_median_diff": paired.get("median_diff"),
         "paired_ratio_harmful_greater_than_safe": paired.get("ratio_harmful_greater_than_safe"),
@@ -121,13 +128,22 @@ def _recommended_from_rows(rows: List[Dict[str, Any]], min_retain_gap_constraint
         if not constrained.empty:
             val_df = constrained
 
-    max_auc = val_df["harmful_vs_safe_auc"].max()
-    candidates = val_df[val_df["harmful_vs_safe_auc"] >= max_auc - 0.02].copy()
+    val_df["balanced_auc"] = val_df[["harmful_vs_safe_auc", "harmful_vs_retain_auc"]].min(axis=1)
+    max_auc = val_df["balanced_auc"].max()
+    candidates = val_df[val_df["balanced_auc"] >= max_auc - 0.02].copy()
     candidates["retain_penalty"] = (candidates["retain_mean"] - candidates["harmful_mean"]).fillna(1e9)
     candidates["centered_priority"] = candidates["score_mode"].map({"centered": 0, "raw": 1}).fillna(2)
     candidates = candidates.sort_values(
-        by=["paired_mean_diff", "retain_penalty", "k", "centered_priority"],
-        ascending=[False, True, True, True],
+        by=[
+            "balanced_auc",
+            "harmful_vs_retain_auc",
+            "harmful_vs_safe_auc",
+            "retain_penalty",
+            "paired_mean_diff",
+            "k",
+            "centered_priority",
+        ],
+        ascending=[False, False, False, True, False, True, True],
     )
     best = candidates.iloc[0].to_dict()
     train_match = df[
@@ -136,8 +152,10 @@ def _recommended_from_rows(rows: List[Dict[str, Any]], min_retain_gap_constraint
         & (df["score_mode"] == best["score_mode"])
     ]
     reason = (
-        f"Selected among validation configs within 0.02 AUC of the best AUC ({max_auc:.4f}); "
-        "tie-breakers prefer larger paired mean diff, less retain inflation, smaller k, then centered score."
+        f"Selected among validation configs within 0.02 balanced AUC of the best balanced AUC ({max_auc:.4f}); "
+        "balanced AUC is min(harmful-vs-safe AUC, harmful-vs-retain AUC), so retain separability is a primary "
+        "criterion. Tie-breakers prefer higher retain AUC, higher safe AUC, less retain inflation, larger paired "
+        "mean diff, smaller k, then centered score."
     )
     return {
         "recommended_k": int(best["k"]),
@@ -155,12 +173,13 @@ def _recommend_layers(rows: List[Dict[str, Any]], recommended_k: int, score_mode
         raise ValueError("Cannot recommend layers because no val layer-ablation rows are available.")
 
     # Prefer the recommended score mode if it is competitive; otherwise keep all modes.
+    val_df["balanced_auc"] = val_df[["harmful_vs_safe_auc", "harmful_vs_retain_auc"]].min(axis=1)
     hinted = val_df[val_df["score_mode"] == score_mode_hint]
-    if not hinted.empty and hinted["harmful_vs_safe_auc"].max() >= val_df["harmful_vs_safe_auc"].max() - 0.02:
+    if not hinted.empty and hinted["balanced_auc"].max() >= val_df["balanced_auc"].max() - 0.02:
         val_df = hinted
 
-    max_auc = val_df["harmful_vs_safe_auc"].max()
-    candidates = val_df[val_df["harmful_vs_safe_auc"] >= max_auc - 0.02].copy()
+    max_auc = val_df["balanced_auc"].max()
+    candidates = val_df[val_df["balanced_auc"] >= max_auc - 0.02].copy()
     positive = candidates[candidates["paired_mean_diff"].fillna(-1e9) > 0]
     if not positive.empty:
         candidates = positive
@@ -172,16 +191,18 @@ def _recommend_layers(rows: List[Dict[str, Any]], recommended_k: int, score_mode
     ).fillna(2)
     candidates = candidates.sort_values(
         by=[
+            "balanced_auc",
+            "harmful_vs_retain_auc",
+            "harmful_vs_safe_auc",
             "paired_ratio_harmful_greater_than_safe",
             "retain_penalty",
             "num_layers",
             "compact_group_priority",
             "paired_mean_diff",
-            "harmful_vs_safe_auc",
             "all_penalty",
             "mode_priority",
         ],
-        ascending=[False, True, True, True, False, False, True, True],
+        ascending=[False, False, False, False, True, True, True, False, True, True],
     )
     best = candidates.iloc[0].to_dict()
     layers = [int(x) for x in str(best["layers"]).split(",") if x]
@@ -191,9 +212,10 @@ def _recommend_layers(rows: List[Dict[str, Any]], recommended_k: int, score_mode
         & (df["score_mode"] == best["score_mode"])
     ]
     reason = (
-        "Selected from validation layer ablations by high harmful-vs-safe AUC, positive paired diff, "
-        "high harmful-greater ratio, lower retain inflation, and fewer layers. If a compact late/mid-late "
-        "set is close to all layers, the compact set is preferred for sparse second-stage editing."
+        "Selected from validation layer ablations by balanced AUC, defined as the weaker of harmful-vs-safe "
+        "AUC and harmful-vs-retain AUC. Positive paired diff is required when available; tie-breakers prefer "
+        "higher retain AUC, higher safe AUC, high harmful-greater ratio, lower retain inflation, fewer layers, "
+        "and compact late/mid-late sets when close to all layers."
     )
     return {
         "recommended_layers": layers,

@@ -84,6 +84,8 @@ def main() -> None:
     print(f"  score_mode: {layers.get('recommended_score_mode', rec['recommended_score_mode'])}")
     print(f"  layers: {layers.get('recommended_layers', 'not evaluated')}")
     print(f"  val harmful_vs_safe_auc: {val_metrics.get('harmful_vs_safe_auc')}")
+    print(f"  val harmful_vs_retain_auc: {val_metrics.get('harmful_vs_retain_auc')}")
+    print(f"  val balanced_auc: {val_metrics.get('balanced_auc')}")
     print(f"  val paired_mean_diff: {val_metrics.get('paired_mean_diff')}")
     print("  note: centered score is compared with raw score to check whether safe centering reduces retain inflation.")
 
