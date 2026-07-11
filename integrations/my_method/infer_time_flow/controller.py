@@ -389,7 +389,7 @@ class InferenceTimeFlowController:
         return out
 
     def _should_intervene(self, hidden: torch.Tensor) -> bool:
-        if hidden.ndim != 3 or hidden.shape[0] != 1:
+        if hidden.ndim != 3 or hidden.shape[0] < 1:
             return False
         is_decode = hidden.shape[1] == 1
         return self.intervene_on_decode if is_decode else self.intervene_on_prefill
@@ -402,10 +402,10 @@ class InferenceTimeFlowController:
             if not torch.is_tensor(raw_hidden) or not self._should_intervene(raw_hidden):
                 return output
             phase = "decode" if raw_hidden.shape[1] == 1 else "prefill"
-            source = raw_hidden[0, -1, :].clone()
-            intervened = self._intervene_vector(source, hidden_layer, phase=phase)
             hidden = raw_hidden.clone()
-            hidden[0, -1, :] = intervened
+            for batch_idx in range(raw_hidden.shape[0]):
+                source = raw_hidden[batch_idx, -1, :].clone()
+                hidden[batch_idx, -1, :] = self._intervene_vector(source, hidden_layer, phase=phase)
             if isinstance(output, tuple):
                 return (hidden,) + output[1:]
             return hidden

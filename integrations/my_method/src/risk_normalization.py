@@ -86,7 +86,18 @@ def _find_stage1_5_scores(config: Dict[str, Any], split: str, settings: Dict[str
 def _load_or_compute_implicit(config: Dict[str, Any], split: str, settings: Dict[str, Any]) -> tuple[pd.DataFrame, str]:
     existing = _find_stage1_5_scores(config, split, settings)
     if existing is not None:
-        return pd.read_csv(existing), str(existing)
+        df = pd.read_csv(existing)
+        layer_cols = [f"R_layer_{layer}" for layer in settings["layers"]]
+        missing_layer_cols = [col for col in layer_cols if col not in df.columns]
+        if not missing_layer_cols:
+            df = df.copy()
+            df["R_total"] = df[layer_cols].astype(float).sum(axis=1)
+            return df, f"{existing}#layers={','.join(str(layer) for layer in settings['layers'])}"
+        logger.warning(
+            "Existing Stage 1.5 risk scores at %s do not contain requested layer columns %s; recomputing.",
+            existing,
+            missing_layer_cols,
+        )
     basis_path = _basis_path(config, settings)
     if not basis_path.exists():
         raise FileNotFoundError(

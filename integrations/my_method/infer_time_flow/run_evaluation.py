@@ -31,6 +31,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=Path("integrations/my_method/infer_time_flow/outputs/unified_eval"))
     parser.add_argument("--expected-records", type=int, default=50)
     parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--generation-batch-size",
+        type=int,
+        default=1,
+        help="Number of sampled responses generated together for the same prompt/context.",
+    )
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
     parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
@@ -73,6 +79,8 @@ def main() -> None:
             args.config,
             "--max_new_tokens",
             str(args.max_new_tokens),
+            "--generation_batch_size",
+            str(args.generation_batch_size),
             "--strength",
             str(args.strength),
             "--risk_gate_threshold",

@@ -92,6 +92,12 @@ def main() -> None:
     parser.add_argument("--config", default="integrations/my_method/configs/safeeraser_llava.yaml")
     parser.add_argument("--flow_teacher_path", default=None)
     parser.add_argument("--max_new_tokens", type=int, default=256)
+    parser.add_argument(
+        "--generation_batch_size",
+        type=int,
+        default=1,
+        help="Number of sampled responses generated together for the same prompt/context.",
+    )
     parser.add_argument("--device_map", choices=["auto", "single"], default="auto")
     parser.add_argument("--max_memory_per_gpu", default=None)
     parser.add_argument("--strength", type=float, default=0.25)
@@ -107,6 +113,8 @@ def main() -> None:
     parser.add_argument("--no_prefill_intervention", action="store_true")
     parser.add_argument("--no_decode_intervention", action="store_true")
     args = parser.parse_args()
+    if args.generation_batch_size < 1:
+        raise ValueError("--generation_batch_size must be >= 1.")
 
     processor = AutoProcessor.from_pretrained(args.model_path)
     use_device_map = args.device_map == "auto"
@@ -167,7 +175,8 @@ def main() -> None:
         inputs = processor(images=image, text=prompt, return_tensors="pt")
         inputs = _move_inputs(inputs, input_device, model.dtype)
         preds = []
-        for _ in range(num_responses):
+        while len(preds) < num_responses:
+            current_batch = min(int(args.generation_batch_size), num_responses - len(preds))
             primary_ratio = controller.max_delta_norm_ratio
             retry_ratios = [primary_ratio] + [
                 ratio for ratio in fallback_ratios if ratio != primary_ratio
@@ -183,6 +192,7 @@ def main() -> None:
                             temperature=1.0,
                             top_p=0.9,
                             num_beams=1,
+                            num_return_sequences=current_batch,
                         )
                     break
                 except RuntimeError as exc:
@@ -203,7 +213,9 @@ def main() -> None:
                         torch.cuda.empty_cache()
                 finally:
                     controller.max_delta_norm_ratio = primary_ratio
-            preds.append(_decode(processor, output, inputs["input_ids"].shape[1]))
+            prompt_len = inputs["input_ids"].shape[1]
+            for row_idx in range(output.shape[0]):
+                preds.append(_decode(processor, output[row_idx : row_idx + 1], prompt_len))
         return preds
 
     for line in tqdm(rows, desc="infer-time flow SafeEraser inference"):
