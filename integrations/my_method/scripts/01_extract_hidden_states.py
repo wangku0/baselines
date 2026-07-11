@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.extract_hidden_states import extract_hidden_states_for_split
+from src.cli_overrides import add_batch_size_arg, add_model_memory_args, apply_model_memory_override, positive_batch_size
 from src.reuse_existing import reuse_if_exists
 from src.utils import add_dataset_argument, apply_dataset_preset, load_config
 
@@ -18,12 +19,27 @@ def main() -> None:
     parser.add_argument("--split", choices=["train", "val"], required=True)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--model_path", default=None, help="Override config model.local_path")
+    parser.add_argument(
+        "--all_layers",
+        action="store_true",
+        help="Extract all transformer hidden layers, excluding hidden_states[0] embedding output.",
+    )
+    add_batch_size_arg(
+        parser,
+        help_text="Override hidden_states.batch_size for true batched extraction. Use 2 on 4090, 4-8 on A800 as a starting point.",
+    )
+    add_model_memory_args(parser)
     parser.add_argument("--reuse_existing", action="store_true", help="Skip extraction if the split hidden-state file already exists.")
     parser.add_argument("--force", action="store_true", help="Force recomputation even when --reuse_existing products exist.")
     args = parser.parse_args()
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    if args.all_layers:
+        config.setdefault("hidden_states", {})["all_layers"] = True
+    if args.batch_size is not None:
+        config.setdefault("hidden_states", {})["batch_size"] = positive_batch_size(args.batch_size)
+    apply_model_memory_override(config, args, sections=["model"])
     if reuse_if_exists(
         config,
         [f"{config.get('outputs', {}).get('hidden_states_dir', 'outputs/hidden_states')}/{args.split}_hidden_states.pt"],

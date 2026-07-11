@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.stage3_evaluator import evaluate_stage3_unlearning
+from src.cli_overrides import add_batch_size_arg, add_model_memory_args, apply_model_memory_override, positive_batch_size
 from src.reuse_existing import reuse_if_exists
 from src.utils import add_dataset_argument, apply_dataset_preset, load_config
 
@@ -24,6 +25,8 @@ def main() -> None:
     parser.add_argument("--skip_base_baseline", dest="generate_base_baseline", action="store_false")
     parser.add_argument("--model_path", default=None)
     parser.add_argument("--max_new_tokens", type=int, default=None)
+    parser.add_argument("--generation_batch_size", type=int, default=None)
+    add_batch_size_arg(parser, help_text="Alias for --generation_batch_size; overrides stage3.evaluation.generation_batch_size.")
     parser.add_argument("--metrics_dir", default=None)
     parser.add_argument("--figures_dir", default=None)
     parser.add_argument("--generations_dir", default=None)
@@ -48,10 +51,15 @@ def main() -> None:
     parser.add_argument("--transport_target_retain_weight", type=float, default=None)
     parser.add_argument("--reuse_existing", action="store_true", help="Skip evaluation if unlearned summary and scores already exist.")
     parser.add_argument("--force", action="store_true", help="Force reevaluation even when --reuse_existing products exist.")
+    add_model_memory_args(parser)
     args = parser.parse_args()
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    batch_override = args.generation_batch_size if args.generation_batch_size is not None else args.batch_size
+    if batch_override is not None:
+        config.setdefault("stage3", {}).setdefault("evaluation", {})["generation_batch_size"] = positive_batch_size(batch_override)
+    apply_model_memory_override(config, args, sections=["stage3.base_model"])
     if args.metrics_dir:
         config.setdefault("stage3", {}).setdefault("outputs", {})["metrics_dir"] = args.metrics_dir
     if args.figures_dir:

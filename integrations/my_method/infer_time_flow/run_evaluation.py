@@ -37,6 +37,10 @@ def main() -> None:
         default=1,
         help="Number of sampled responses generated together for the same prompt/context.",
     )
+    parser.add_argument("--batch-size", type=int, default=None, help="Alias for --generation-batch-size.")
+    parser.add_argument("--max-memory-per-gpu", default=None, help="Per-GPU memory limit passed to inference, e.g. 75GiB.")
+    parser.add_argument("--gpu-memory", default=None, help="Alias for --max-memory-per-gpu, e.g. 75GiB.")
+    parser.add_argument("--a800-75g", action="store_true", help="Convenience preset: --max-memory-per-gpu 75GiB.")
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
     parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
@@ -55,6 +59,14 @@ def main() -> None:
     parser.add_argument("--llama-guard-model-path", default=None)
     parser.add_argument("--llama-guard-cache-dir", default=None)
     args = parser.parse_args()
+    if args.batch_size is not None:
+        args.generation_batch_size = int(args.batch_size)
+    if args.generation_batch_size < 1:
+        raise ValueError("--generation-batch-size must be >= 1.")
+    if args.a800_75g:
+        args.max_memory_per_gpu = "75GiB"
+    if args.gpu_memory is not None:
+        args.max_memory_per_gpu = str(args.gpu_memory)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -94,6 +106,8 @@ def main() -> None:
             "--risk_trace_max_records",
             str(args.risk_trace_max_records),
         ]
+        if args.max_memory_per_gpu:
+            command.extend(["--max_memory_per_gpu", args.max_memory_per_gpu])
         if args.checkpoint_path:
             command.extend(["--checkpoint_path", args.checkpoint_path])
         if args.flow_teacher_path:
@@ -153,6 +167,8 @@ def main() -> None:
             "--risk-trace-max-records",
             str(args.risk_trace_max_records),
         ]
+        if args.max_memory_per_gpu:
+            implicit_command.extend(["--gpu_memory", args.max_memory_per_gpu])
         if args.checkpoint_path:
             implicit_command.extend(["--checkpoint-path", args.checkpoint_path])
         if args.flow_teacher_path:

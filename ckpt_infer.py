@@ -111,31 +111,34 @@ def main(args):
         }
 
         all_predictions = []
-        for _ in range(num_responses):
+        while len(all_predictions) < num_responses:
+            current_batch = min(int(args.generation_batch_size), num_responses - len(all_predictions))
             output = model.generate(
                 **inputs,
                 max_new_tokens=my_max_new_tokens,
                 do_sample=True,
                 temperature=temperature,
                 top_p=top_p,
-                num_beams=num_beams
+                num_beams=num_beams,
+                num_return_sequences=current_batch,
             )
-            generated_ids = output[0, inputs["input_ids"].shape[1]:]
-            decoded = processor.decode(
-                generated_ids, skip_special_tokens=True
-            ).strip()
+            for row_idx in range(output.shape[0]):
+                generated_ids = output[row_idx, inputs["input_ids"].shape[1]:]
+                decoded = processor.decode(
+                    generated_ids, skip_special_tokens=True
+                ).strip()
 
-            if "ASSISTANT:" in decoded:
-                idx = decoded.index("ASSISTANT:")
-                prediction = decoded[idx:].replace("ASSISTANT:", "", 1).strip()
-            else:
-                prediction = decoded
+                if "ASSISTANT:" in decoded:
+                    idx = decoded.index("ASSISTANT:")
+                    prediction = decoded[idx:].replace("ASSISTANT:", "", 1).strip()
+                else:
+                    prediction = decoded
 
 
-            if prediction.endswith("</s>"):
-                prediction = prediction[:-len("</s>")].strip()
+                if prediction.endswith("</s>"):
+                    prediction = prediction[:-len("</s>")].strip()
 
-            all_predictions.append(prediction)
+                all_predictions.append(prediction)
 
         return all_predictions
 
@@ -271,6 +274,15 @@ if __name__ == "__main__":
         default=None,
         help="optional per-GPU limit used by device_map=auto, e.g. 13GiB",
     )
+    parser.add_argument("--gpu_memory", default=None, help="Alias for --max_memory_per_gpu, e.g. 75GiB")
+    parser.add_argument("--a800_75g", action="store_true", help="Convenience preset: --max_memory_per_gpu 75GiB")
+    parser.add_argument(
+        "--generation_batch_size",
+        type=int,
+        default=1,
+        help="Number of sampled responses generated together for the same prompt/context.",
+    )
+    parser.add_argument("--batch_size", type=int, default=None, help="Alias for --generation_batch_size")
     parser.add_argument(
         "--max_new_tokens",
         type=int,
@@ -278,4 +290,12 @@ if __name__ == "__main__":
         help="maximum generated tokens per response (default: 256)",
     )
     args = parser.parse_args()
+    if args.batch_size is not None:
+        args.generation_batch_size = int(args.batch_size)
+    if args.generation_batch_size < 1:
+        raise ValueError("--generation_batch_size must be >= 1.")
+    if args.a800_75g:
+        args.max_memory_per_gpu = "75GiB"
+    if args.gpu_memory is not None:
+        args.max_memory_per_gpu = str(args.gpu_memory)
     main(args)

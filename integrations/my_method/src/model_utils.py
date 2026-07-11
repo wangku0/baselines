@@ -277,3 +277,46 @@ def prepare_vl_inputs(
         inputs = processor(text=[text], images=[image], padding=True, return_tensors="pt")
 
     return _move_inputs_to_device(inputs, device)
+
+
+def prepare_vl_batch_inputs(
+    processor,
+    samples: list[Dict[str, Any]],
+    device: Optional[torch.device] = None,
+    *,
+    max_pixels: Optional[int] = None,
+):
+    """Prepare a small multimodal batch for hidden-state extraction.
+
+    The current batched path is intended for LLaVA-style processors. Qwen
+    processors use qwen-vl-utils with per-message image metadata, so keep them
+    on the single-sample path unless a dedicated Qwen batch path is added.
+    """
+    if uses_qwen_vision_utils(processor):
+        raise NotImplementedError("Batched hidden-state extraction is not implemented for Qwen processors.")
+
+    texts = []
+    images = []
+    for sample in samples:
+        image_path_obj = Path(sample["image_path"])
+        if not image_path_obj.exists():
+            raise FileNotFoundError(f"Image not found: {sample['image_path']}")
+        image = Image.open(image_path_obj).convert("RGB")
+        images.append(image)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": str(image_path_obj),
+                        **({"max_pixels": int(max_pixels)} if max_pixels is not None else {}),
+                    },
+                    {"type": "text", "text": sample["instruction"]},
+                ],
+            }
+        ]
+        texts.append(processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True))
+
+    inputs = processor(text=texts, images=images, padding=True, return_tensors="pt")
+    return _move_inputs_to_device(inputs, device)

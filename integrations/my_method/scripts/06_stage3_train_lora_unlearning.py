@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.risk_space.recommended_config import RecommendedRiskConfig, load_recommended_risk_config, save_resolved_recommended_config
+from src.cli_overrides import add_batch_size_arg, add_model_memory_args, apply_model_memory_override, positive_batch_size
 from src.stage3_lora_utils import sync_stage3_layers_with_recommendation
 from src.stage3_trainer import train_stage3_lora
 from src.reuse_existing import reuse_if_exists
@@ -95,6 +96,7 @@ def main() -> None:
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--max_train_samples", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
+    add_batch_size_arg(parser, help_text="Override stage3.training.batch_size.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument(
         "--safe_ce_weight",
@@ -168,12 +170,16 @@ def main() -> None:
         help="Override stage3.layer_selection.top_n for risk_transport_influence. Use an integer or 'auto'.",
     )
     parser.add_argument("--debug", action="store_true")
+    add_model_memory_args(parser)
     parser.add_argument("--reuse_existing", action="store_true", help="Skip training if adapter_config.json already exists.")
     parser.add_argument("--force", action="store_true", help="Force retraining even when --reuse_existing products exist.")
     args = parser.parse_args()
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    if args.batch_size is not None:
+        config.setdefault("stage3", {}).setdefault("training", {})["batch_size"] = positive_batch_size(args.batch_size)
+    apply_model_memory_override(config, args, sections=["stage3.base_model"])
     if args.model_path:
         config.setdefault("stage3", {}).setdefault("base_model", {})["model_path"] = args.model_path
     if args.flow_teacher_path:

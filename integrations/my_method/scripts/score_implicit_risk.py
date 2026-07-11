@@ -20,6 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_loader import load_dataset
 from src.model_utils import infer_input_device
+from src.cli_overrides import add_model_memory_args, apply_model_memory_override
 from src.stage3_evaluator import (
     _implicit_baseline_samples,
     _implicit_for_sample,
@@ -328,6 +329,7 @@ def main() -> None:
     )
     parser.add_argument("--safeeraser-lora-r", type=int, default=32)
     parser.add_argument("--safeeraser-lora-alpha", type=int, default=256)
+    add_model_memory_args(parser)
     parser.add_argument(
         "--fail-on-identical-scores",
         action="store_true",
@@ -335,7 +337,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = sync_stage3_layers_with_recommendation(load_config(args.config))
+    raw_config = load_config(args.config)
+    apply_model_memory_override(raw_config, args, sections=["stage3.base_model"])
+    config = sync_stage3_layers_with_recommendation(raw_config)
     samples = load_dataset(config, split=args.split)
     if args.scope == "all":
         sd_eval_file = args.sd_eval_file or _infer_sd_eval_file(config, args.split)

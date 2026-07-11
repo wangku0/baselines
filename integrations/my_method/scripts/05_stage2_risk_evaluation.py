@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.stage2_risk_evaluation import run_stage2_risk_evaluation
+from src.cli_overrides import add_batch_size_arg, add_model_memory_args, apply_model_memory_override, positive_batch_size
 from src.reuse_existing import reuse_if_exists
 from src.utils import add_dataset_argument, apply_dataset_preset, load_config
 
@@ -43,6 +44,9 @@ def main():
     parser.add_argument("--skip_generation", action="store_true")
     parser.add_argument("--force_regenerate", action="store_true")
     parser.add_argument("--model_path", default=None)
+    parser.add_argument("--generation_batch_size", type=int, default=None)
+    add_batch_size_arg(parser, help_text="Alias for --generation_batch_size; overrides stage2.generation.generation_batch_size.")
+    add_model_memory_args(parser)
     parser.add_argument(
         "--llama-guard-model-path",
         default=None,
@@ -76,6 +80,10 @@ def main():
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    batch_override = args.generation_batch_size if args.generation_batch_size is not None else args.batch_size
+    if batch_override is not None:
+        config.setdefault("stage2", {}).setdefault("generation", {})["generation_batch_size"] = positive_batch_size(batch_override)
+    apply_model_memory_override(config, args, sections=["model"])
     if args.llama_guard_model_path:
         guard_path = Path(args.llama_guard_model_path).expanduser()
         guard_cfg = config.setdefault("stage2", {}).setdefault("explicit_risk", {}).setdefault("llama_guard2", {})

@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.stage3_trainer import train_stage3_lora
+from src.cli_overrides import add_batch_size_arg, add_model_memory_args, apply_model_memory_override, positive_batch_size
 from src.reuse_existing import reuse_if_exists
 from src.utils import add_dataset_argument, apply_dataset_preset, load_config
 
@@ -18,6 +19,7 @@ def main() -> None:
     parser.add_argument("--max_steps", type=int, default=None)
     parser.add_argument("--max_train_samples", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
+    add_batch_size_arg(parser, help_text="Override stage3.training.batch_size.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None)
     parser.add_argument("--safe_neighbor_ce_weight", type=float, default=None)
     parser.add_argument("--output_dir", default=None)
@@ -36,10 +38,14 @@ def main() -> None:
         default=None,
         help="Override stage3.layer_selection.top_n for risk_transport_influence. Use an integer or 'auto'.",
     )
+    add_model_memory_args(parser)
     args = parser.parse_args()
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    if args.batch_size is not None:
+        config.setdefault("stage3", {}).setdefault("training", {})["batch_size"] = positive_batch_size(args.batch_size)
+    apply_model_memory_override(config, args, sections=["stage3.base_model"])
     if args.safe_neighbor_ce_weight is not None:
         config.setdefault("stage3", {}).setdefault("loss_weights", {})["safe_neighbor_ce"] = float(args.safe_neighbor_ce_weight)
     if args.layer_selection_method:

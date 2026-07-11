@@ -119,6 +119,9 @@ def generate_for_samples(
     device = infer_input_device(model)
     max_pixels = config["stage3"].get("preprocessing", {}).get("max_pixels", 200704)
     batch_size = max(1, int(gen_cfg.get("generation_batch_size", gen_cfg.get("batch_size", 1))))
+    tokenizer = getattr(processor, "tokenizer", None)
+    if batch_size > 1 and tokenizer is not None:
+        tokenizer.padding_side = "left"
     rows = []
     model.eval()
     for start in tqdm(range(0, len(samples), batch_size), desc=f"stage3 generate {split} {source}"):

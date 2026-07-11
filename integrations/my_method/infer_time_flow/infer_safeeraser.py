@@ -98,8 +98,11 @@ def main() -> None:
         default=1,
         help="Number of sampled responses generated together for the same prompt/context.",
     )
+    parser.add_argument("--batch_size", type=int, default=None, help="Alias for --generation_batch_size.")
     parser.add_argument("--device_map", choices=["auto", "single"], default="auto")
     parser.add_argument("--max_memory_per_gpu", default=None)
+    parser.add_argument("--gpu_memory", default=None, help="Alias for --max_memory_per_gpu, e.g. 75GiB.")
+    parser.add_argument("--a800_75g", action="store_true", help="Convenience preset: --max_memory_per_gpu 75GiB.")
     parser.add_argument("--strength", type=float, default=0.25)
     parser.add_argument("--risk_gate_threshold", type=float, default=0.0)
     parser.add_argument("--risk_gate_mode", choices=["fused", "implicit"], default="fused")
@@ -113,8 +116,14 @@ def main() -> None:
     parser.add_argument("--no_prefill_intervention", action="store_true")
     parser.add_argument("--no_decode_intervention", action="store_true")
     args = parser.parse_args()
+    if args.batch_size is not None:
+        args.generation_batch_size = int(args.batch_size)
     if args.generation_batch_size < 1:
         raise ValueError("--generation_batch_size must be >= 1.")
+    if args.a800_75g:
+        args.max_memory_per_gpu = "75GiB"
+    if args.gpu_memory is not None:
+        args.max_memory_per_gpu = str(args.gpu_memory)
 
     processor = AutoProcessor.from_pretrained(args.model_path)
     use_device_map = args.device_map == "auto"

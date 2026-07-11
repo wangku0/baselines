@@ -115,6 +115,11 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=output_root)
     parser.add_argument("--expected-records", type=int, default=50)
     parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument("--generation-batch-size", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=None, help="Alias for --generation-batch-size.")
+    parser.add_argument("--max-memory-per-gpu", default=None)
+    parser.add_argument("--gpu-memory", default=None, help="Alias for --max-memory-per-gpu.")
+    parser.add_argument("--a800-75g", action="store_true", help="Convenience preset: --max-memory-per-gpu 75GiB.")
     parser.add_argument("--llama-guard-model-path", default=None)
     parser.add_argument("--llama-guard-cache-dir", default=None)
     parser.add_argument(
@@ -125,6 +130,14 @@ def main() -> None:
     )
     parser.add_argument("--skip-inference", action="store_true")
     args = parser.parse_args()
+    if args.batch_size is not None:
+        args.generation_batch_size = int(args.batch_size)
+    if args.generation_batch_size < 1:
+        raise ValueError("--generation-batch-size must be >= 1.")
+    if args.a800_75g:
+        args.max_memory_per_gpu = "75GiB"
+    if args.gpu_memory is not None:
+        args.max_memory_per_gpu = str(args.gpu_memory)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     predictions = (args.output_dir / f"{args.method_name}_predictions.json").resolve()
@@ -135,22 +148,23 @@ def main() -> None:
     eval_input = enriched_eval_file(Path(args.eval_file).resolve(), args.paired_eval_file, args.output_dir, args.method_name)
 
     if not args.skip_inference:
-        run(
-            [
-                args.python,
-                "ckpt_infer.py",
-                "--eval_file",
-                str(eval_input.resolve()),
-                "--model_path",
-                args.model_path,
-                "--output_file",
-                str(predictions),
-                "--max_new_tokens",
-                str(args.max_new_tokens),
-            ],
-            repo_root,
-            env,
-        )
+        infer_command = [
+            args.python,
+            "ckpt_infer.py",
+            "--eval_file",
+            str(eval_input.resolve()),
+            "--model_path",
+            args.model_path,
+            "--output_file",
+            str(predictions),
+            "--max_new_tokens",
+            str(args.max_new_tokens),
+            "--generation_batch_size",
+            str(args.generation_batch_size),
+        ]
+        if args.max_memory_per_gpu:
+            infer_command.extend(["--max_memory_per_gpu", args.max_memory_per_gpu])
+        run(infer_command, repo_root, env)
     if not predictions.is_file():
         raise FileNotFoundError(f"Predictions do not exist: {predictions}")
     validate_predictions(predictions, args.expected_records)

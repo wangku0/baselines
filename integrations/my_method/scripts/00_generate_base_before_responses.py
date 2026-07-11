@@ -6,6 +6,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_loader import load_dataset
+from src.cli_overrides import add_batch_size_arg, add_model_memory_args, apply_model_memory_override, positive_batch_size
 from src.utils import (
     add_dataset_argument,
     apply_dataset_preset,
@@ -101,6 +102,8 @@ def main() -> None:
     parser.add_argument("--base_model_path", default=None, help="Base model path/repo id used to generate before responses.")
     parser.add_argument("--max_new_tokens", type=int, default=None)
     parser.add_argument("--generation_batch_size", type=int, default=None)
+    add_batch_size_arg(parser, help_text="Alias for --generation_batch_size; overrides stage3.evaluation.generation_batch_size.")
+    add_model_memory_args(parser)
     parser.add_argument("--generations_path", default=None)
     parser.add_argument("--force", action="store_true", help="Regenerate even if a matching before file exists.")
     args = parser.parse_args()
@@ -110,8 +113,10 @@ def main() -> None:
     _apply_dataset_file_overrides(config, args)
     if args.max_new_tokens is not None:
         config.setdefault("stage3", {}).setdefault("evaluation", {})["max_new_tokens"] = int(args.max_new_tokens)
-    if args.generation_batch_size is not None:
-        config.setdefault("stage3", {}).setdefault("evaluation", {})["generation_batch_size"] = int(args.generation_batch_size)
+    batch_override = args.generation_batch_size if args.generation_batch_size is not None else args.batch_size
+    if batch_override is not None:
+        config.setdefault("stage3", {}).setdefault("evaluation", {})["generation_batch_size"] = positive_batch_size(batch_override)
+    apply_model_memory_override(config, args, sections=["stage3.base_model"])
 
     resolved_dataset_label = dataset_label(config)
     logger.info(
