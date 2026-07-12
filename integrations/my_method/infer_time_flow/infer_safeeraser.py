@@ -6,6 +6,7 @@ import os
 import random
 import sys
 from pathlib import Path
+from typing import Any
 
 import torch
 from peft import LoraConfig, get_peft_model
@@ -83,6 +84,20 @@ def _decode(processor, output, prompt_len: int) -> str:
     return decoded
 
 
+def _prompt_from_text(prompt_text: str) -> str:
+    conv = conv_templates["vicuna_v1"].copy()
+    conv.append_message(conv.roles[0], prompt_text)
+    conv.append_message(conv.roles[1], None)
+    return conv.get_prompt()
+
+
+def _set_nested_value(root: dict, path: tuple[Any, ...], value: str) -> None:
+    cur: Any = root
+    for key in path[:-1]:
+        cur = cur[key]
+    cur[path[-1]] = value
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SafeEraser-format inference with inference-time Flow hidden-state intervention.")
     parser.add_argument("--eval_file", required=True)
@@ -99,6 +114,13 @@ def main() -> None:
         help="Number of sampled responses generated together for the same prompt/context.",
     )
     parser.add_argument("--batch_size", type=int, default=None, help="Alias for --generation_batch_size.")
+    parser.add_argument(
+        "--cross_sample_batch_size",
+        "--cross-sample-batch-size",
+        type=int,
+        default=1,
+        help="Experimental opt-in: batch different prompt/image tasks together. Default 1 preserves the original path.",
+    )
     parser.add_argument("--device_map", choices=["auto", "single"], default="auto")
     parser.add_argument("--max_memory_per_gpu", default=None)
     parser.add_argument("--gpu_memory", default=None, help="Alias for --max_memory_per_gpu, e.g. 75GiB.")
@@ -120,6 +142,8 @@ def main() -> None:
         args.generation_batch_size = int(args.batch_size)
     if args.generation_batch_size < 1:
         raise ValueError("--generation_batch_size must be >= 1.")
+    if args.cross_sample_batch_size < 1:
+        raise ValueError("--cross_sample_batch_size must be >= 1.")
     if args.a800_75g:
         args.max_memory_per_gpu = "75GiB"
     if args.gpu_memory is not None:
@@ -227,11 +251,135 @@ def main() -> None:
                 preds.append(_decode(processor, output[row_idx : row_idx + 1], prompt_len))
         return preds
 
+    def generate_task_batch(tasks: list[dict]) -> None:
+        if not tasks:
+            return
+        images = []
+        for task in tasks:
+            with Image.open(task["image_path"]) as img:
+                images.append(img.convert("RGB"))
+        prompts = [_prompt_from_text(task["prompt_text"]) for task in tasks]
+        inputs = processor(images=images, text=prompts, padding=True, return_tensors="pt")
+        inputs = _move_inputs(inputs, input_device, model.dtype)
+        primary_ratio = controller.max_delta_norm_ratio
+        retry_ratios = [primary_ratio] + [ratio for ratio in fallback_ratios if ratio != primary_ratio]
+        output = None
+        for attempt, ratio in enumerate(retry_ratios):
+            controller.max_delta_norm_ratio = ratio
+            try:
+                with controller.enabled_batch(
+                    explicit_risks=[task["explicit_risk"] for task in tasks],
+                    group_ids=[task["group_id"] for task in tasks],
+                ):
+                    output = model.generate(
+                        **inputs,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=True,
+                        temperature=1.0,
+                        top_p=0.9,
+                        num_beams=1,
+                    )
+                break
+            except RuntimeError as exc:
+                message = str(exc).lower()
+                numerical_error = (
+                    "probability tensor contains" in message
+                    and ("inf" in message or "nan" in message or "element < 0" in message)
+                )
+                if not numerical_error or attempt + 1 >= len(retry_ratios):
+                    raise
+                controller.stats.numerical_retries += 1
+                next_ratio = retry_ratios[attempt + 1]
+                print(
+                    "Numerical generation error at "
+                    f"max_delta_norm_ratio={ratio}; retrying current cross-sample batch with {next_ratio}."
+                )
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            finally:
+                controller.max_delta_norm_ratio = primary_ratio
+        if output is None:
+            raise RuntimeError("Cross-sample generation produced no output.")
+        prompt_len = inputs["input_ids"].shape[1]
+        for row_idx, task in enumerate(tasks):
+            _set_nested_value(task["root"], task["output_path"], _decode(processor, output[row_idx : row_idx + 1], prompt_len))
+
+    def run_cross_sample_generation(output_rows: list[dict]) -> None:
+        tasks: list[dict] = []
+
+        def add_task(root: dict, output_path: tuple[Any, ...], prompt_text: str, image_path: str | None, explicit_risk: float, group_id: int) -> None:
+            if image_path and os.path.exists(image_path):
+                tasks.append(
+                    {
+                        "root": root,
+                        "output_path": output_path,
+                        "prompt_text": prompt_text,
+                        "image_path": image_path,
+                        "explicit_risk": float(explicit_risk),
+                        "group_id": int(group_id),
+                    }
+                )
+
+        for output_line in output_rows:
+            sd_image_path = output_line.get("SDImage_path")
+            image_id_path = output_line.get("image_path")
+            unsafe_pairs = output_line.get("unsafe_pairs", [])
+            safe_nb_pairs = output_line.get("safeNb_pairs", [])
+            if sd_image_path:
+                for pair_idx, pair in enumerate(unsafe_pairs):
+                    q = pair.get("question", "")
+                    add_task(output_line, ("unsafe_pairs", pair_idx, "sd_response"), f"<image>\n{q}", sd_image_path, 1.0, 0)
+            if image_id_path:
+                for key in ("UnharmPair_text1", "UnharmPair_text2", "UnharmPair_image1", "UnharmPair_image2"):
+                    item = output_line.get(key)
+                    if isinstance(item, dict) and str(item.get("Question", "")).strip():
+                        add_task(output_line, (key, "Prediction"), f"<image>\n{item['Question']}", image_id_path, 0.0, 2)
+                for pair_idx, pair in enumerate(unsafe_pairs):
+                    pair.pop("model_response", None)
+                    q = pair.get("question", "")
+                    for response_idx in range(1, 4):
+                        add_task(
+                            output_line,
+                            ("unsafe_pairs", pair_idx, f"model_response{response_idx}"),
+                            f"<image>\n{q}",
+                            image_id_path,
+                            1.0,
+                            0,
+                        )
+                if isinstance(safe_nb_pairs, list):
+                    for pair_idx, pair in enumerate(safe_nb_pairs):
+                        if not isinstance(pair, dict):
+                            continue
+                        pair.pop("model_response", None)
+                        q = str(pair.get("question", ""))
+                        if q.strip():
+                            add_task(output_line, ("safeNb_pairs", pair_idx, "model_response1"), f"<image>\n{q}", image_id_path, 0.0, 1)
+
+        batch_size = int(args.cross_sample_batch_size)
+        tokenizer = getattr(processor, "tokenizer", None)
+        old_padding_side = getattr(tokenizer, "padding_side", None) if tokenizer is not None else None
+        if tokenizer is not None:
+            tokenizer.padding_side = "left"
+        try:
+            for start in tqdm(range(0, len(tasks), batch_size), desc="infer-time flow cross-sample generation"):
+                batch = tasks[start : start + batch_size]
+                try:
+                    generate_task_batch(batch)
+                except Exception as exc:
+                    if batch_size <= 1:
+                        raise
+                    print(f"Cross-sample batch failed at task={start}; retrying one by one: {exc}")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    for task in batch:
+                        generate_task_batch([task])
+        finally:
+            if tokenizer is not None and old_padding_side is not None:
+                tokenizer.padding_side = old_padding_side
+
     for line in tqdm(rows, desc="infer-time flow SafeEraser inference"):
         sd_image_path = resolve_dataset_path(line.get("SDImage_path"))
-        sd_image = Image.open(sd_image_path).convert("RGB") if sd_image_path and os.path.exists(sd_image_path) else None
         image_id_path = resolve_dataset_path(line.get("image_path") or line.get("image_id"))
-        id_image = Image.open(image_id_path).convert("RGB") if image_id_path and os.path.exists(image_id_path) else None
 
         output_line = dict(line)
         output_line["image_path"] = image_id_path
@@ -240,6 +388,15 @@ def main() -> None:
 
         unsafe_pairs = output_line.get("unsafe_pairs", [])
         safe_nb_pairs = output_line.get("safeNb_pairs", [])
+        if args.cross_sample_batch_size > 1:
+            output_line["unsafe_pairs"] = unsafe_pairs
+            if safe_nb_pairs:
+                output_line["safeNb_pairs"] = safe_nb_pairs
+            results.append(output_line)
+            continue
+
+        sd_image = Image.open(sd_image_path).convert("RGB") if sd_image_path and os.path.exists(sd_image_path) else None
+        id_image = Image.open(image_id_path).convert("RGB") if image_id_path and os.path.exists(image_id_path) else None
 
         if sd_image is not None:
             for pair in unsafe_pairs:
@@ -306,6 +463,9 @@ def main() -> None:
         if safe_nb_pairs:
             output_line["safeNb_pairs"] = safe_nb_pairs
         results.append(output_line)
+
+    if args.cross_sample_batch_size > 1:
+        run_cross_sample_generation(results)
 
     out = Path(args.output_file)
     out.parent.mkdir(parents=True, exist_ok=True)

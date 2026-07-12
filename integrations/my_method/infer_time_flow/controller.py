@@ -166,6 +166,8 @@ class InferenceTimeFlowController:
         self.group_id = int(group_id)
         self._context_explicit_risk = float(explicit_risk)
         self._context_group_id = int(group_id)
+        self._batch_explicit_risks: Optional[List[float]] = None
+        self._batch_group_ids: Optional[List[int]] = None
         self.intervene_on_prefill = bool(intervene_on_prefill)
         self.intervene_on_decode = bool(intervene_on_decode)
         self.handles: List[Any] = []
@@ -405,7 +407,8 @@ class InferenceTimeFlowController:
             hidden = raw_hidden.clone()
             for batch_idx in range(raw_hidden.shape[0]):
                 source = raw_hidden[batch_idx, -1, :].clone()
-                hidden[batch_idx, -1, :] = self._intervene_vector(source, hidden_layer, phase=phase)
+                with self._batch_item_context(batch_idx):
+                    hidden[batch_idx, -1, :] = self._intervene_vector(source, hidden_layer, phase=phase)
             if isinstance(output, tuple):
                 return (hidden,) + output[1:]
             return hidden
@@ -441,12 +444,78 @@ class InferenceTimeFlowController:
             self._context_group_id = old_group
 
     @contextmanager
+    def _batch_item_context(self, batch_idx: int):
+        if self._batch_explicit_risks is None and self._batch_group_ids is None:
+            yield self
+            return
+        old_explicit = self._context_explicit_risk
+        old_group = self._context_group_id
+        try:
+            if self._batch_explicit_risks is not None:
+                if batch_idx >= len(self._batch_explicit_risks):
+                    raise IndexError(
+                        f"Batch explicit-risk context has {len(self._batch_explicit_risks)} items, "
+                        f"but model hidden batch index {batch_idx} was requested."
+                    )
+                self._context_explicit_risk = float(self._batch_explicit_risks[batch_idx])
+            if self._batch_group_ids is not None:
+                if batch_idx >= len(self._batch_group_ids):
+                    raise IndexError(
+                        f"Batch group-id context has {len(self._batch_group_ids)} items, "
+                        f"but model hidden batch index {batch_idx} was requested."
+                    )
+                self._context_group_id = int(self._batch_group_ids[batch_idx])
+            yield self
+        finally:
+            self._context_explicit_risk = old_explicit
+            self._context_group_id = old_group
+
+    @contextmanager
+    def batch_context(
+        self,
+        *,
+        explicit_risks: Optional[Iterable[float]] = None,
+        group_ids: Optional[Iterable[int]] = None,
+    ):
+        old_explicit = self._batch_explicit_risks
+        old_group = self._batch_group_ids
+        self._batch_explicit_risks = [float(x) for x in explicit_risks] if explicit_risks is not None else None
+        self._batch_group_ids = [int(x) for x in group_ids] if group_ids is not None else None
+        if (
+            self._batch_explicit_risks is not None
+            and self._batch_group_ids is not None
+            and len(self._batch_explicit_risks) != len(self._batch_group_ids)
+        ):
+            raise ValueError("explicit_risks and group_ids must have the same length.")
+        try:
+            yield self
+        finally:
+            self._batch_explicit_risks = old_explicit
+            self._batch_group_ids = old_group
+
+    @contextmanager
     def enabled(self, *, explicit_risk: Optional[float] = None, group_id: Optional[int] = None):
         self.register()
         old = self._enabled
         self._enabled = True
         try:
             with self.context(explicit_risk=explicit_risk, group_id=group_id):
+                yield self
+        finally:
+            self._enabled = old
+
+    @contextmanager
+    def enabled_batch(
+        self,
+        *,
+        explicit_risks: Optional[Iterable[float]] = None,
+        group_ids: Optional[Iterable[int]] = None,
+    ):
+        self.register()
+        old = self._enabled
+        self._enabled = True
+        try:
+            with self.batch_context(explicit_risks=explicit_risks, group_ids=group_ids):
                 yield self
         finally:
             self._enabled = old

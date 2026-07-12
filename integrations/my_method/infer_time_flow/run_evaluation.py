@@ -38,6 +38,12 @@ def main() -> None:
         help="Number of sampled responses generated together for the same prompt/context.",
     )
     parser.add_argument("--batch-size", type=int, default=None, help="Alias for --generation-batch-size.")
+    parser.add_argument(
+        "--cross-sample-batch-size",
+        type=int,
+        default=1,
+        help="Experimental opt-in: batch different prompt/image tasks together. Default 1 preserves the original inference path.",
+    )
     parser.add_argument("--max-memory-per-gpu", default=None, help="Per-GPU memory limit passed to inference, e.g. 75GiB.")
     parser.add_argument("--gpu-memory", default=None, help="Alias for --max-memory-per-gpu, e.g. 75GiB.")
     parser.add_argument("--a800-75g", action="store_true", help="Convenience preset: --max-memory-per-gpu 75GiB.")
@@ -63,6 +69,8 @@ def main() -> None:
         args.generation_batch_size = int(args.batch_size)
     if args.generation_batch_size < 1:
         raise ValueError("--generation-batch-size must be >= 1.")
+    if args.cross_sample_batch_size < 1:
+        raise ValueError("--cross-sample-batch-size must be >= 1.")
     if args.a800_75g:
         args.max_memory_per_gpu = "75GiB"
     if args.gpu_memory is not None:
@@ -93,6 +101,8 @@ def main() -> None:
             str(args.max_new_tokens),
             "--generation_batch_size",
             str(args.generation_batch_size),
+            "--cross_sample_batch_size",
+            str(args.cross_sample_batch_size),
             "--strength",
             str(args.strength),
             "--risk_gate_threshold",
