@@ -117,6 +117,21 @@ def _decode_new_tokens(processor, inputs: Dict[str, Any], generated_ids: torch.T
     return decoded[0].strip() if decoded else ""
 
 
+def _generate_single_response(
+    model,
+    processor,
+    sample: Dict[str, Any],
+    device: torch.device,
+    generate_kwargs: Dict[str, Any],
+    *,
+    max_pixels: int,
+) -> str:
+    inputs = prepare_vl_inputs(processor, sample["image_path"], sample["instruction"], device, max_pixels=max_pixels)
+    with torch.inference_mode():
+        generated_ids = model.generate(**inputs, **generate_kwargs)
+    return _decode_new_tokens(processor, inputs, generated_ids)
+
+
 def generate_responses_for_split(
     config: Dict[str, Any],
     split: str,
@@ -196,8 +211,33 @@ def generate_responses_for_split(
             with torch.inference_mode():
                 generated_ids = model.generate(**inputs, **generate_kwargs)
             decoded = _decode_batch_new_tokens(processor, inputs, generated_ids)
-            for record, response in zip(batch_records, decoded):
+            for sample, record, response in zip(batch, batch_records, decoded):
                 record["generated_response"] = response
+                if str(response or "").strip():
+                    continue
+                if batch_size > 1:
+                    try:
+                        retry_response = _generate_single_response(
+                            model,
+                            processor,
+                            sample,
+                            device,
+                            generate_kwargs,
+                            max_pixels=max_pixels,
+                        )
+                        record["generated_response"] = retry_response
+                        if str(retry_response or "").strip():
+                            logger.warning(
+                                "Batch generation produced an empty response; single-sample retry succeeded for sample_id=%s",
+                                sample["id"],
+                            )
+                            continue
+                        record["generation_error"] = "empty_decoded_response_after_single_retry"
+                    except Exception as retry_exc:
+                        record["generation_error"] = f"empty_decoded_response; single_retry_failed: {retry_exc}"
+                        logger.warning("Single-sample retry failed for sample_id=%s: %s", sample["id"], retry_exc)
+                else:
+                    record["generation_error"] = "empty_decoded_response"
         except Exception as exc:
             message = str(exc)
             if isinstance(exc, RuntimeError) and "out of memory" in message.lower():
@@ -208,10 +248,17 @@ def generate_responses_for_split(
             if batch_size > 1:
                 for sample, record in zip(batch, batch_records):
                     try:
-                        inputs = prepare_vl_inputs(processor, sample["image_path"], sample["instruction"], device)
-                        with torch.inference_mode():
-                            generated_ids = model.generate(**inputs, **generate_kwargs)
-                        record["generated_response"] = _decode_new_tokens(processor, inputs, generated_ids)
+                        response = _generate_single_response(
+                            model,
+                            processor,
+                            sample,
+                            device,
+                            generate_kwargs,
+                            max_pixels=max_pixels,
+                        )
+                        record["generated_response"] = response
+                        if not str(response or "").strip():
+                            record["generation_error"] = "empty_decoded_response"
                     except Exception as inner_exc:
                         record["generation_error"] = str(inner_exc)
                         logger.warning("Fallback generation failed for sample_id=%s: %s", sample["id"], inner_exc)
