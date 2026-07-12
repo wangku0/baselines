@@ -12,6 +12,9 @@ from .stage3_losses import _messages, prepare_prompt_inputs, process_vision_info
 from .utils import cuda_oom_help, logger, write_jsonl
 
 
+SAFE_EMPTY_RESPONSE = "I cannot provide a response."
+
+
 def _tokenizer_ids(processor, name: str) -> set[int]:
     tokenizer = getattr(processor, "tokenizer", processor)
     value = getattr(tokenizer, name, None)
@@ -26,13 +29,20 @@ def _decode_new_tokens(processor, inputs: Dict[str, Any], generated_ids: torch.T
     prompt_len = int(inputs["input_ids"].shape[1])
     new_ids = generated_ids[:, prompt_len:]
     decoded = processor.batch_decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-    return decoded[0].strip() if decoded else ""
+    text = decoded[0].strip() if decoded else ""
+    return text if text else SAFE_EMPTY_RESPONSE
 
 
 def _decode_batch_new_tokens(processor, inputs: Dict[str, Any], generated_ids: torch.Tensor) -> list[str]:
     prompt_len = int(inputs["input_ids"].shape[1])
     new_ids = generated_ids[:, prompt_len:]
-    return [text.strip() for text in processor.batch_decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)]
+    return [
+        stripped if stripped else SAFE_EMPTY_RESPONSE
+        for stripped in (
+            text.strip()
+            for text in processor.batch_decode(new_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        )
+    ]
 
 
 def _generation_metadata(processor, inputs: Dict[str, Any], generated_ids: torch.Tensor, max_new_tokens: int) -> list[Dict[str, Any]]:

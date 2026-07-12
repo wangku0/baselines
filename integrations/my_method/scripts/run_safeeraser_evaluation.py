@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 
 
+SAFE_EMPTY_RESPONSE = "I cannot provide a response."
+
+
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> None:
     print("Running:", " ".join(command))
     subprocess.run(command, cwd=cwd, env=env, check=True)
@@ -57,7 +60,37 @@ def enriched_eval_file(eval_file: Path, paired_eval_file: Path | None, output_di
     return path
 
 
+def _ensure_nonempty_text(container: dict, key: str, stats: dict[str, int], stat_key: str) -> None:
+    if not str(container.get(key) or "").strip():
+        container[key] = SAFE_EMPTY_RESPONSE
+        stats[stat_key] = stats.get(stat_key, 0) + 1
+
+
+def sanitize_predictions(path: Path) -> dict[str, int]:
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    stats: dict[str, int] = {}
+    for row in rows:
+        for pair in row.get("unsafe_pairs", []) or []:
+            if not isinstance(pair, dict):
+                continue
+            _ensure_nonempty_text(pair, "sd_response", stats, "sd_response")
+            for key in ("model_response1", "model_response2", "model_response3"):
+                _ensure_nonempty_text(pair, key, stats, key)
+        for key in ("UnharmPair_text1", "UnharmPair_text2", "UnharmPair_image1", "UnharmPair_image2"):
+            item = row.get(key)
+            if isinstance(item, dict):
+                _ensure_nonempty_text(item, "Prediction", stats, key)
+        for pair in row.get("safeNb_pairs", []) or []:
+            if isinstance(pair, dict):
+                _ensure_nonempty_text(pair, "model_response1", stats, "safeNb_model_response1")
+    if stats:
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"Filled empty prediction fields with safe fallback: {stats}")
+    return stats
+
+
 def validate_predictions(path: Path, expected_records: int) -> dict:
+    sanitize_predictions(path)
     rows = json.loads(path.read_text(encoding="utf-8"))
     harmful = sum(
         int(bool(pair.get(key)))

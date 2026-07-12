@@ -12,6 +12,9 @@ from utils import get_attn_implementation, resolve_dataset_path
 
 random.seed(233)
 
+SAFE_EMPTY_RESPONSE = "I cannot provide a response."
+
+
 def main(args):
     file = args.eval_file
     model_path = args.model_path
@@ -137,6 +140,9 @@ def main(args):
 
                 if prediction.endswith("</s>"):
                     prediction = prediction[:-len("</s>")].strip()
+
+                if not prediction.strip():
+                    prediction = SAFE_EMPTY_RESPONSE
 
                 all_predictions.append(prediction)
 

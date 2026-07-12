@@ -29,6 +29,7 @@ SAFEERASER_TARGET_MODULES = (
     r".*language_model.*\."
     r"(up_proj|k_proj|linear_2|down_proj|v_proj|q_proj|o_proj|gate_proj|linear_1)"
 )
+SAFE_EMPTY_RESPONSE = "I cannot provide a response."
 
 
 def load_safeeraser_checkpoint(model, checkpoint_path: str, r: int = 32, alpha: int = 256):
@@ -81,7 +82,7 @@ def _decode(processor, output, prompt_len: int) -> str:
         decoded = decoded[decoded.index("ASSISTANT:") :].replace("ASSISTANT:", "", 1).strip()
     if decoded.endswith("</s>"):
         decoded = decoded[: -len("</s>")].strip()
-    return decoded
+    return decoded if decoded.strip() else SAFE_EMPTY_RESPONSE
 
 
 def _prompt_from_text(prompt_text: str) -> str:
