@@ -26,6 +26,12 @@ def main() -> None:
     parser.add_argument("--flow-teacher-path", default=None)
     parser.add_argument("--eval-file", required=True)
     parser.add_argument("--paired-eval-file", type=Path, default=None)
+    parser.add_argument(
+        "--sd-eval-file",
+        type=Path,
+        default=None,
+        help="SafeEraser eval JSON containing SDImage_path for implicit-risk scope=all. Defaults to --eval-file.",
+    )
     parser.add_argument("--method-name", required=True)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output-dir", type=Path, default=Path("integrations/my_method/infer_time_flow/outputs/unified_eval"))
@@ -177,6 +183,8 @@ def main() -> None:
             "--risk-trace-max-records",
             str(args.risk_trace_max_records),
         ]
+        sd_eval_file = args.sd_eval_file or Path(args.eval_file)
+        implicit_command.extend(["--sd-eval-file", str(sd_eval_file.resolve())])
         if args.max_memory_per_gpu:
             implicit_command.extend(["--gpu_memory", args.max_memory_per_gpu])
         if args.checkpoint_path:
