@@ -239,7 +239,10 @@ def main(cfg):
         )
 
     if "llava" in cfg.model_path:
-        image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
+        try:
+            image_processor = CLIPImageProcessor.from_pretrained(cfg.model_path)
+        except OSError:
+            image_processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
         tokenizer = AutoTokenizer.from_pretrained(cfg.model_path)
         model = LlavaForConditionalGeneration.from_pretrained(
             cfg.model_path,
