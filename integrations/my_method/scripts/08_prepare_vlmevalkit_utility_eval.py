@@ -19,13 +19,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.utility_eval.vlmevalkit_wrapper import wrapper_module_text
+from src.utils import load_config
 
 
 DEFAULT_DATASETS = ["MME", "MMBench_DEV_EN"]
@@ -48,11 +48,6 @@ DATASET_SOURCE_URLS = {
     "MME": "https://opencompass.openxlab.space/utils/VLMEval/MME.tsv",
     "MMBench_DEV_EN": "https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_DEV_EN.tsv",
 }
-
-
-def _load_yaml(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
 
 
 def _project_path(path: Optional[str], project_root: Path) -> Optional[str]:
@@ -363,7 +358,7 @@ def main() -> None:
     args = parser.parse_args()
 
     project_root = Path.cwd().resolve()
-    cfg = _load_yaml(project_root / args.config)
+    cfg = load_config(str(project_root / args.config))
 
     utility_cfg = cfg.get("utility_eval", {})
     flagged_datasets = _selected_specificity_datasets(args)
