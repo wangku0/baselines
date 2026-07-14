@@ -1,0 +1,350 @@
+project_root: .
+dataset:
+  train_file: dataset/paired/all_train.json
+  val_file: dataset/paired/all_val.json
+  image_root: dataset
+model:
+  local_path: llava-hf/llava-1.5-7b-hf
+  model_type: llava
+  torch_dtype: float16
+  device_map: auto
+  attn_implementation: sdpa
+  trust_remote_code: true
+  local_files_only: false
+  cache_dir: null
+  max_memory:
+    0: 24GiB
+    cpu: 90GiB
+  offload_folder: integrations/my_method/outputs_all/offload
+hidden_states:
+  target_layers:
+  - 4
+  - 8
+  - 12
+  - 16
+  - 20
+  - 24
+  layer_index_offset: 0
+  token_position: last_input_token
+  batch_size: 1
+  max_pixels: 50176
+  clear_cuda_cache_every: 0
+  max_samples: null
+risk_space:
+  k: 8
+  center_delta: true
+  normalize_delta: false
+  build_split: train
+  target:
+    mode: safe_neighbor
+    safe_weight: 0.5
+    retain_weight: 0.5
+stage1_5:
+  enabled: true
+  score_modes:
+  - centered_positive
+  k_values:
+  - 1
+  - 2
+  - 4
+  - 8
+  layer_ablation:
+    enabled: true
+    mode: single_and_cumulative
+    use_k: null
+  selection_metric: val_balanced_harmful_vs_safe_and_retain_auc
+  min_retain_gap_constraint: false
+stage2:
+  enabled: true
+  response_source: generate
+  generation:
+    model_path: llava-hf/llava-1.5-7b-hf
+    max_new_tokens: 256
+    generation_batch_size: 4
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    batch_size: 1
+    reuse_existing_generations: true
+  explicit_risk:
+    method: llama_guard2_asr
+    llama_guard2:
+      backend: llama_cpp
+      model_path: QuantFactory/Meta-Llama-Guard-2-8B-GGUF
+      filename: Meta-Llama-Guard-2-8B.Q4_K_M.gguf
+      n_ctx: 4096
+      n_gpu_layers: -1
+      n_batch: 512
+      verbose: false
+      cache_dir: null
+      max_input_tokens: 4096
+      max_new_tokens: 16
+    formula:
+      harmfulness_weight: 0.5
+      executable_detail_weight: 0.3
+      non_refusal_weight: 0.2
+      safety_redirection_bonus: -0.1
+    clamp_to_01: true
+  implicit_risk:
+    score_mode: centered_positive
+    k: 2
+    layers:
+    - 12
+    - 16
+    - 20
+    - 24
+    use_stage1_5_recommended: true
+    source: risk_basis
+    risk_basis_path: null
+  normalization:
+    method: train_minmax_percentile
+    lower_percentile: 0
+    upper_percentile: 95
+    clip: true
+  total_risk:
+    alpha_explicit: 0.5
+    beta_implicit: 0.5
+  outputs:
+    generations_dir: integrations/my_method/outputs_all/generations
+    metrics_dir: integrations/my_method/outputs_all/metrics/stage2
+    figures_dir: integrations/my_method/outputs_all/figures/stage2
+flow_matching:
+  enabled: true
+  output_dir: integrations/my_method/outputs_all/stage2_5_flow
+  target:
+    mode: safe_neighbor
+    safe_weight: 0.5
+    retain_weight: 0.5
+  recommended_config:
+    source: stage1_5
+    path: integrations/my_method/outputs_all/metrics/stage1_5/recommended_layers.json
+    allow_fallback: false
+  layer_mapping:
+    hidden_to_lora: previous_block
+  representation:
+    pooling: stage1_last_input_token_cache
+    mean_weight: 0.5
+    last_weight: 0.5
+    exclude_eos: true
+  dynamic_risk_normalization:
+    method: stage2_sample_risk
+    clip: true
+    filename: implicit_normalization.json
+  teacher:
+    type: conditional_hidden_rectified_flow
+    hidden_width: 1024
+    time_embedding_dim: 128
+    prompt_condition_dim: 256
+    group_embedding_dim: 16
+    layer_embedding_dim: 16
+    dropout: 0.05
+    lr: 0.001
+    weight_decay: 0.0001
+    batch_size: 64
+    steps: 8000
+    grad_clip: 1.0
+    ode_steps: 8
+    eval_every: 500
+    save_every: 1000
+  teacher_losses:
+    velocity: 1.0
+    endpoint: 0.5
+    risk_endpoint: 1.0
+    identity_safe_retain: 0.5
+stage3:
+  enabled: true
+  base_model:
+    model_path: llava-hf/llava-1.5-7b-hf
+    torch_dtype: float16
+    device_map: auto
+    attn_implementation: sdpa
+    trust_remote_code: true
+    max_memory:
+      0: 24GiB
+      cpu: 90GiB
+    offload_folder: integrations/my_method/outputs_all/offload
+  risk_space:
+    risk_basis_path: integrations/my_method/outputs_all/risk_space/risk_basis.pt
+    score_mode: centered_positive
+    k: 2
+    risk_layers:
+    - 20
+    use_stage1_5_recommended: true
+  layer_selection:
+    method: stage1_5_ablation
+    split: train
+    candidate_layers:
+    - 4
+    - 8
+    - 12
+    - 16
+    - 20
+    - 24
+    top_n: 1
+    top_n_ablation_path: integrations/my_method/outputs_all/metrics/stage3/risk_transport_topn_ablation.json
+    top_n_ablation_max: 6
+    top_n_coverage_target: 0.85
+    top_n_complexity_penalty: 0.03
+    top_n_retain_penalty: 0.1
+    top_n_min_marginal_gain: 0.05
+    transport_target:
+      mode: safe_neighbor
+      safe_weight: 0.5
+      retain_weight: 0.5
+    retain_overlap_penalty: 0.5
+    risk_projection_weight: 0.5
+    min_pairs: 10
+    module_selection_path: integrations/my_method/outputs_all/metrics/stage3/module_risk_transport_selection.json
+    module_selection_max_harmful: 64
+    module_selection_max_retain: 64
+    top_k_modules: 4
+    reuse_module_selection: true
+  data:
+    train_stage2_scores: integrations/my_method/outputs_all/metrics/stage2/train_stage2_risk_scores.csv
+    train_weights: integrations/my_method/outputs_all/metrics/stage2/train_training_weights.csv
+    val_stage2_scores: integrations/my_method/outputs_all/metrics/stage2/val_stage2_risk_scores.csv
+    harmful_safe_pairing: true
+    retain_ratio: 2
+    max_train_samples: null
+  safe_response:
+    mode: paired_safe_response
+    fallback_template: I cannot provide instructions for carrying out a dangerous
+      or harmful activity. I can help describe the safety risks, recommend keeping
+      a safe distance, contacting qualified professionals or emergency services, and
+      following official safety guidance.
+  align_target:
+    mode: safe_neighbor
+    safe_weight: 0.5
+    retain_weight: 0.5
+  lora:
+    enabled: true
+    r: 8
+    lora_alpha: 16
+    lora_dropout: 0.05
+    bias: none
+    target_modules:
+    - q_proj
+    - v_proj
+    - up_proj
+    - down_proj
+    train_layers:
+    - 19
+    fallback_train_nearby_layers:
+    - 19
+    - 18
+    - 17
+    - 16
+    - 15
+    - 14
+    - 13
+    - 12
+    - 11
+    - 10
+    require_requested_layers: true
+    task_type: CAUSAL_LM
+  training:
+    output_dir: integrations/my_method/outputs_all/stage3/lora_unlearned
+    num_train_epochs: 1
+    max_steps: null
+    learning_rate: 2.0e-05
+    weight_decay: 0.0
+    gradient_accumulation_steps: 8
+    max_grad_norm: 1.0
+    logging_steps: 1
+    save_steps: 50
+    seed: 42
+    use_amp: true
+    batch_size: 1
+    harmful_safe_retain_schedule: triplet_with_retain
+    retain_per_pair: 2
+  preprocessing:
+    max_pixels: 50176
+  loss_weights:
+    safe_ce: 1.0
+    safe_neighbor_ce: 1.0
+    npo: 0.0
+    po: 0.0
+    align: 0.3
+    implicit: 0.3
+    safe_kl: 0.2
+    retain_kl: 0.5
+    retain_hidden: 0.5
+  npo:
+    beta: 0.1
+  po:
+    prompt_path: dataset/prompt.json
+  flow_distillation:
+    enabled: true
+    teacher_path: integrations/my_method/outputs_all/stage2_5_flow/flow_teacher.pt
+    recommended_config_source: stage1_5
+    ode_steps: 8
+    detach_teacher_target: true
+    lambda_flow_max: 0.5
+    lambda_identity: 0.5
+    ramp_start_ratio: 0.1
+    ramp_end_ratio: 0.4
+    min_flow_warmup_steps: 10
+    delta_mse_weight: 0.5
+    delta_cos_weight: 0.2
+    risk_mse_weight: 1.0
+  kl:
+    temperature: 1.0
+    mask_to_assistant_tokens: true
+  hidden_retain:
+    layers:
+    - 20
+    loss: mse
+  evaluation:
+    generate_after_training: true
+    max_new_tokens: 768
+    generation_batch_size: 4
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    eval_splits:
+    - val
+    compare_with_stage2_baseline: true
+    generate_base_baseline: true
+    reuse_base_generations: true
+    base_generations_path_template: integrations/my_method/outputs_all/generations/stage3/{dataset}_{split}_base_generations.jsonl
+  outputs:
+    output_dir: integrations/my_method/outputs_all/stage3
+    adapter_dir: integrations/my_method/outputs_all/stage3/lora_unlearned/adapter
+    metrics_dir: integrations/my_method/outputs_all/metrics/stage3
+    figures_dir: integrations/my_method/outputs_all/figures/stage3
+    generations_dir: integrations/my_method/outputs_all/generations/stage3
+evaluation:
+  splits:
+  - train
+  - val
+  compute_auc: true
+  compute_paired_stats: true
+utility_eval:
+  backend: vlmevalkit
+  output_dir: integrations/my_method/outputs_all/utility_eval/vlmevalkit
+  datasets:
+  - MME
+  - MMBench_DEV_EN
+  model:
+    base_model_path: llava-hf/llava-1.5-7b-hf
+    max_new_tokens: 128
+    min_pixels: null
+    max_pixels: 50176
+    attn_implementation: sdpa
+    device_map: auto
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
+    top_k: 1
+  methods:
+    base:
+      adapter_path: null
+    ours:
+      adapter_path: integrations/my_method/outputs_all/stage3/lora_unlearned/adapter
+outputs:
+  hidden_states_dir: integrations/my_method/outputs_all/hidden_states
+  risk_space_dir: integrations/my_method/outputs_all/risk_space
+  metrics_dir: integrations/my_method/outputs_all/metrics
+  figures_dir: integrations/my_method/outputs_all/figures
+debug:
+  max_samples: null

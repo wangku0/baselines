@@ -1,0 +1,8 @@
+# PO evaluation on Violence using the 50-sample Violence risk space.
+# Inherits risk_space_dir, stage2 metrics, Stage1.5 recommendation, and normalization
+# from safeeraser_llava.yaml, which points to integrations/my_method/outputs/...
+base_config: safeeraser_llava.yaml
+
+dataset:
+  train_file: "integrations/my_method/outputs/data/violence_50_paired_train.json"
+  val_file: "integrations/my_method/outputs/data/violence_50_paired_val.json"

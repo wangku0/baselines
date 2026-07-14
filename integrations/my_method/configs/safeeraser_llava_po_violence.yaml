@@ -1,0 +1,5 @@
+base_config: safeeraser_llava_all.yaml
+
+dataset:
+  train_file: dataset/paired/all_train_violence.json
+  val_file: dataset/paired/all_val_violence.json
