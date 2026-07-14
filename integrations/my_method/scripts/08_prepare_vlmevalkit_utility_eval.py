@@ -246,6 +246,7 @@ def build_config(
     max_pixels: Optional[int],
     attn_implementation: Optional[str],
     device_map: Optional[str],
+    model_class: Optional[str],
     do_sample: bool,
 ) -> Dict[str, Any]:
     model_cfg = config.get("model", {})
@@ -268,7 +269,7 @@ def build_config(
     )
 
     common = {
-        "class": "SafeNavQwen2VLChat",
+        "class": model_class or utility_model_cfg.get("class", "SafeNavQwen2VLChat"),
         "model_path": base_model,
         "max_new_tokens": final_max_new_tokens,
         "attn_implementation": attn_implementation or utility_model_cfg.get("attn_implementation", "sdpa"),
@@ -348,6 +349,14 @@ def main() -> None:
         help="Transformers device_map used by Qwen2-VL. Use 'auto' for GPU auto placement.",
     )
     parser.add_argument(
+        "--model_class",
+        default=None,
+        help=(
+            "VLMEvalKit model class name. Defaults to utility_eval.model.class, "
+            "then SafeNavQwen2VLChat for the adapter wrapper."
+        ),
+    )
+    parser.add_argument(
         "--mini_samples",
         type=int,
         default=None,
@@ -399,6 +408,7 @@ def main() -> None:
         max_pixels=args.max_pixels,
         attn_implementation=args.attn_implementation,
         device_map=args.device_map,
+        model_class=args.model_class,
         do_sample=args.do_sample,
     )
     out_config.parent.mkdir(parents=True, exist_ok=True)
