@@ -20,6 +20,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_loader import load_dataset
 from src.model_utils import infer_input_device
+from src.stage3_generation import _batch_prompt_inputs
+from src.flow_matching.utils import compute_risk_coefficients
 from src.cli_overrides import add_model_memory_args, apply_model_memory_override
 from src.stage3_evaluator import (
     _implicit_baseline_samples,
@@ -201,7 +203,66 @@ def _scoring_baselines(samples: list[dict]) -> dict[str, dict | None]:
     return baselines
 
 
-def score_model(model, processor, config, samples: list[dict], label: str, sample_types: set[str]) -> pd.DataFrame:
+def _last_token_hidden_batch(outputs, inputs: dict, layer: int) -> torch.Tensor:
+    hidden = outputs.hidden_states[int(layer)]
+    mask = inputs.get("attention_mask")
+    if mask is None:
+        return hidden[:, -1, :].float()
+    positions = mask.long().sum(dim=1).clamp(min=1) - 1
+    batch_idx = torch.arange(hidden.shape[0], device=hidden.device)
+    return hidden[batch_idx, positions.to(hidden.device), :].float()
+
+
+def _risk_scores(coeff: torch.Tensor, score_mode: str) -> list[float]:
+    if score_mode.endswith("_signed"):
+        values = coeff.mean(dim=1)
+    elif score_mode.endswith("_positive"):
+        values = torch.linalg.vector_norm(torch.relu(coeff), ord=2, dim=1)
+    else:
+        values = torch.linalg.vector_norm(coeff, ord=2, dim=1)
+    return [float(x) for x in values.detach().cpu().tolist()]
+
+
+def _implicit_for_batch(
+    model,
+    processor,
+    batch: list[dict],
+    config: dict,
+    risk_tensors,
+    lower: float,
+    upper: float,
+    recommended,
+) -> list[tuple[float, float, float]]:
+    device = infer_input_device(model)
+    max_pixels = config["stage3"].get("preprocessing", {}).get("max_pixels", 200704)
+    inputs = _batch_prompt_inputs(processor, batch, device, max_pixels=max_pixels)
+    with torch.no_grad():
+        out = model(**inputs, output_hidden_states=True, return_dict=True)
+    score_mode = str(recommended.recommended_score_mode)
+    raw_scores = [0.0 for _ in batch]
+    for layer, basis in risk_tensors["risk_basis"].items():
+        h = _last_token_hidden_batch(out, inputs, int(layer)).to(basis.device)
+        coeff = compute_risk_coefficients(
+            h,
+            int(layer),
+            recommended,
+            risk_tensors["risk_basis"],
+            risk_tensors["safe_center"],
+        )
+        for i, value in enumerate(_risk_scores(coeff, score_mode)):
+            raw_scores[i] += value
+    results = []
+    for raw in raw_scores:
+        raw = float(raw)
+        norm_before_clip = (raw - lower) / max(upper - lower, 1e-6)
+        norm = norm_before_clip
+        if config["stage2"]["normalization"].get("clip", True):
+            norm = float(np.clip(norm, 0.0, 1.0))
+        results.append((raw, float(norm_before_clip), norm))
+    return results
+
+
+def score_model(model, processor, config, samples: list[dict], label: str, sample_types: set[str], batch_size: int = 1) -> pd.DataFrame:
     baselines = _scoring_baselines(samples)
     targets = [sample for sample in samples if sample.get("sample_type") in sample_types]
     device = infer_input_device(model)
@@ -209,39 +270,59 @@ def score_model(model, processor, config, samples: list[dict], label: str, sampl
         config, device
     )
     rows = []
-    for sample in tqdm(targets, desc=f"implicit risk ({label})"):
-        baseline = baselines.get(str(sample["id"]))
-        raw, before_clip, norm = _implicit_for_sample(
-            model,
-            processor,
-            sample,
-            baseline,
-            scoring_config,
-            risk_tensors,
-            lower,
-            upper,
-            recommended,
-        )
-        rows.append(
-            {
-                "method": label,
-                "sample_id": sample["id"],
-                "sample_type": sample.get("sample_type"),
-                "pair_id": sample.get("pair_id"),
-                "image_path": sample.get("image_path"),
-                "instruction": sample.get("instruction"),
-                "baseline_sample_id": baseline.get("id") if baseline else None,
-                "baseline_sample_type": baseline.get("sample_type") if baseline else None,
-                "safeNb_sample_id": (
-                    baseline.get("id")
-                    if baseline and baseline.get("sample_type") == "safe_neighbor"
-                    else None
-                ),
-                "R_implicit_raw": raw,
-                "R_implicit_norm_before_clip": before_clip,
-                "R_implicit_norm": norm,
-            }
-        )
+    batch_size = max(1, int(batch_size or 1))
+    for start in tqdm(range(0, len(targets), batch_size), desc=f"implicit risk ({label})"):
+        batch = targets[start : start + batch_size]
+        if batch_size == 1:
+            scores = []
+            for sample in batch:
+                baseline = baselines.get(str(sample["id"]))
+                scores.append(
+                    _implicit_for_sample(
+                        model,
+                        processor,
+                        sample,
+                        baseline,
+                        scoring_config,
+                        risk_tensors,
+                        lower,
+                        upper,
+                        recommended,
+                    )
+                )
+        else:
+            scores = _implicit_for_batch(
+                model,
+                processor,
+                batch,
+                scoring_config,
+                risk_tensors,
+                lower,
+                upper,
+                recommended,
+            )
+        for sample, (raw, before_clip, norm) in zip(batch, scores):
+            baseline = baselines.get(str(sample["id"]))
+            rows.append(
+                {
+                    "method": label,
+                    "sample_id": sample["id"],
+                    "sample_type": sample.get("sample_type"),
+                    "pair_id": sample.get("pair_id"),
+                    "image_path": sample.get("image_path"),
+                    "instruction": sample.get("instruction"),
+                    "baseline_sample_id": baseline.get("id") if baseline else None,
+                    "baseline_sample_type": baseline.get("sample_type") if baseline else None,
+                    "safeNb_sample_id": (
+                        baseline.get("id")
+                        if baseline and baseline.get("sample_type") == "safe_neighbor"
+                        else None
+                    ),
+                    "R_implicit_raw": raw,
+                    "R_implicit_norm_before_clip": before_clip,
+                    "R_implicit_norm": norm,
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -329,6 +410,13 @@ def main() -> None:
     )
     parser.add_argument("--safeeraser-lora-r", type=int, default=32)
     parser.add_argument("--safeeraser-lora-alpha", type=int, default=256)
+    parser.add_argument(
+        "--implicit-batch-size",
+        "--implicit_batch_size",
+        type=int,
+        default=1,
+        help="Batch size for implicit-risk hidden-state forward passes; 1 preserves the original path.",
+    )
     add_model_memory_args(parser)
     parser.add_argument(
         "--fail-on-identical-scores",
@@ -353,7 +441,7 @@ def main() -> None:
     expected_scored = sum(sample.get("sample_type") in sample_types for sample in samples)
 
     base_model, base_processor, base_lora_stats = load_variant(config, None, None, 32, 256)
-    base = score_model(base_model, base_processor, config, samples, "base", sample_types)
+    base = score_model(base_model, base_processor, config, samples, "base", sample_types, args.implicit_batch_size)
     del base_model, base_processor
     release_cuda_cache()
 
@@ -364,7 +452,7 @@ def main() -> None:
         args.safeeraser_lora_r,
         args.safeeraser_lora_alpha,
     )
-    after = score_model(target_model, target_processor, config, samples, args.method_name, sample_types)
+    after = score_model(target_model, target_processor, config, samples, args.method_name, sample_types, args.implicit_batch_size)
     del target_model, target_processor
     release_cuda_cache()
 

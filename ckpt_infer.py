@@ -27,6 +27,9 @@ def main(args):
 
     processor = AutoProcessor.from_pretrained(model_path)
     tokenizer = processor.tokenizer
+    if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
     use_device_map = args.device_map == "auto"
     max_memory = None
     if use_device_map and args.max_memory_per_gpu:
@@ -91,20 +94,14 @@ def main(args):
 
     results = []
 
-    def generate_responses(prompt_text, image,
-                           num_responses=1,
-                           temperature=1.0,
-                           top_p=0.9,
-                           num_beams=1,
-                          my_max_new_tokens=512):
-
+    def _build_prompt(prompt_text):
         conv = conv_templates["vicuna_v1"].copy()
         conv.append_message(conv.roles[0], prompt_text)
         conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
+        return conv.get_prompt()
 
-        inputs = processor(images=image, text=prompt, return_tensors="pt")
-        inputs = {
+    def _move_inputs(inputs):
+        return {
             key: (
                 value.to(device=input_device, dtype=model.dtype)
                 if torch.is_floating_point(value)
@@ -113,127 +110,78 @@ def main(args):
             for key, value in inputs.items()
         }
 
-        all_predictions = []
-        while len(all_predictions) < num_responses:
-            current_batch = min(int(args.generation_batch_size), num_responses - len(all_predictions))
-            output = model.generate(
-                **inputs,
-                max_new_tokens=my_max_new_tokens,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
-                num_beams=num_beams,
-                num_return_sequences=current_batch,
-            )
-            for row_idx in range(output.shape[0]):
-                generated_ids = output[row_idx, inputs["input_ids"].shape[1]:]
-                decoded = processor.decode(
-                    generated_ids, skip_special_tokens=True
-                ).strip()
-
-                if "ASSISTANT:" in decoded:
-                    idx = decoded.index("ASSISTANT:")
-                    prediction = decoded[idx:].replace("ASSISTANT:", "", 1).strip()
-                else:
-                    prediction = decoded
-
-
-                if prediction.endswith("</s>"):
-                    prediction = prediction[:-len("</s>")].strip()
-
-                if not prediction.strip():
-                    prediction = SAFE_EMPTY_RESPONSE
-
-                all_predictions.append(prediction)
-
-        return all_predictions
-
-    for line in tqdm(data):
-        sd_image_path = resolve_dataset_path(line.get("SDImage_path"))
-        if sd_image_path and os.path.exists(sd_image_path):
-            sd_image = Image.open(sd_image_path).convert('RGB')
-            sd_image_input = sd_image
+    def _decode_prediction(generated_ids):
+        decoded = processor.decode(generated_ids, skip_special_tokens=True).strip()
+        if "ASSISTANT:" in decoded:
+            idx = decoded.index("ASSISTANT:")
+            prediction = decoded[idx:].replace("ASSISTANT:", "", 1).strip()
         else:
-            print("sd_image_input is None")
-            sd_image_input = None
+            prediction = decoded
+        if prediction.endswith("</s>"):
+            prediction = prediction[:-len("</s>")].strip()
+        return prediction if prediction.strip() else SAFE_EMPTY_RESPONSE
 
+    generation_tasks = []
 
-        image_id_path = resolve_dataset_path(
-            line.get("image_path") or line.get("image_id")
+    def add_generation_task(prompt_text, image_path, target, key, max_new_tokens):
+        if not image_path or not os.path.exists(image_path):
+            return
+        generation_tasks.append(
+            {
+                "prompt": _build_prompt(prompt_text),
+                "image_path": image_path,
+                "target": target,
+                "key": key,
+                "max_new_tokens": int(max_new_tokens),
+            }
         )
-        if image_id_path and os.path.exists(image_id_path):
-            id_image = Image.open(image_id_path).convert('RGB')
-            id_image_input = id_image
-        else:
-            print("id_image_input is None")
-            id_image_input = None
 
-        output_line = {}
-        for k, v in line.items():
-            output_line[k] = v
+    for line in tqdm(data, desc="prepare ckpt eval tasks"):
+        sd_image_path = resolve_dataset_path(line.get("SDImage_path"))
+        if not (sd_image_path and os.path.exists(sd_image_path)):
+            print("sd_image_input is None")
+            sd_image_path = None
+
+        image_id_path = resolve_dataset_path(line.get("image_path") or line.get("image_id"))
+        if not (image_id_path and os.path.exists(image_id_path)):
+            print("id_image_input is None")
+            image_id_path = None
+
+        output_line = {k: v for k, v in line.items()}
         output_line["image_path"] = image_id_path
         if sd_image_path:
             output_line["SDImage_path"] = sd_image_path
 
         unsafe_pairs = output_line.get("unsafe_pairs", [])
         safe_nb_pairs = output_line.get("safeNb_pairs", [])
-        if sd_image_input is not None:
+
+        if sd_image_path is not None:
             for up in unsafe_pairs:
                 q = up.get("question", "")
+                add_generation_task(f"<image>\n{q}", sd_image_path, up, "sd_response", tokens_sd)
 
-                prompt_text = f"<image>\n{q}"
-                new_sd_resp = generate_responses(prompt_text, sd_image_input, num_responses=1,my_max_new_tokens=tokens_sd)
+        if image_id_path is not None:
+            retain_fields = (
+                ("UnharmPair_text1", tokens_text),
+                ("UnharmPair_text2", tokens_text),
+                ("UnharmPair_image1", tokens_image),
+                ("UnharmPair_image2", tokens_image),
+            )
+            for field, max_tokens in retain_fields:
+                value = output_line.get(field)
+                if isinstance(value, dict):
+                    q = str(value.get("Question", "")).strip()
+                    if q:
+                        add_generation_task(f"<image>\n{q}", image_id_path, value, "Prediction", max_tokens)
 
-                if new_sd_resp:
-                    up["sd_response"] = new_sd_resp[0]
-
-        if id_image_input is not None:
-            if "UnharmPair_text1" in output_line and isinstance(output_line["UnharmPair_text1"], dict):
-                q_text1 = output_line["UnharmPair_text1"].get("Question", "")
-                if q_text1.strip():
-                    prompt_text1 = f"<image>\n{q_text1}"
-                    new_pred_text1 = generate_responses(prompt_text1, id_image_input, num_responses=1,my_max_new_tokens=tokens_text)
-                    if new_pred_text1:
-                        output_line["UnharmPair_text1"]["Prediction"] = new_pred_text1[0]
-
-            if "UnharmPair_text2" in output_line and isinstance(output_line["UnharmPair_text2"], dict):
-                q_text2 = output_line["UnharmPair_text2"].get("Question", "")
-                if q_text2.strip():
-                    prompt_text2 = f"<image>\n{q_text2}"
-                    new_pred_text2 = generate_responses(prompt_text2, id_image_input, num_responses=1,my_max_new_tokens=tokens_text)
-                    if new_pred_text2:
-                        output_line["UnharmPair_text2"]["Prediction"] = new_pred_text2[0]
-
-            if "UnharmPair_image1" in output_line and isinstance(output_line["UnharmPair_image1"], dict):
-                q_img1 = output_line["UnharmPair_image1"].get("Question", "")
-                if q_img1.strip():
-                    prompt_img1 = f"<image>\n{q_img1}"
-                    new_pred_img1 = generate_responses(prompt_img1, id_image_input, num_responses=1,my_max_new_tokens=tokens_image)
-                    if new_pred_img1:
-                        output_line["UnharmPair_image1"]["Prediction"] = new_pred_img1[0]
-
-            if "UnharmPair_image2" in output_line and isinstance(output_line["UnharmPair_image2"], dict):
-                q_img2 = output_line["UnharmPair_image2"].get("Question", "")
-                if q_img2.strip():
-                    prompt_img2 = f"<image>\n{q_img2}"
-                    new_pred_img2 = generate_responses(prompt_img2, id_image_input, num_responses=1,my_max_new_tokens=tokens_image)
-                    if new_pred_img2:
-                        output_line["UnharmPair_image2"]["Prediction"] = new_pred_img2[0]
-
-        if id_image_input is not None:
             for up in unsafe_pairs:
                 if "model_response" in up:
                     del up["model_response"]
-
                 q = up.get("question", "")
                 prompt_text = f"<image>\n{q}"
-                model_preds = generate_responses(prompt_text, id_image_input, num_responses=3,my_max_new_tokens=tokens_harm)
-                if len(model_preds) >= 1:
-                    up["model_response1"] = model_preds[0]
-                if len(model_preds) >= 2:
-                    up["model_response2"] = model_preds[1]
-                if len(model_preds) >= 3:
-                    up["model_response3"] = model_preds[2]
+                add_generation_task(prompt_text, image_id_path, up, "model_response1", tokens_harm)
+                add_generation_task(prompt_text, image_id_path, up, "model_response2", tokens_harm)
+                add_generation_task(prompt_text, image_id_path, up, "model_response3", tokens_harm)
 
             if isinstance(safe_nb_pairs, list):
                 for sp in safe_nb_pairs:
@@ -241,19 +189,67 @@ def main(args):
                         continue
                     if "model_response" in sp:
                         del sp["model_response"]
-                    q = sp.get("question", "")
-                    if not str(q).strip():
-                        continue
-                    prompt_text = f"<image>\n{q}"
-                    model_preds = generate_responses(prompt_text, id_image_input, num_responses=1, my_max_new_tokens=tokens_harm)
-                    if len(model_preds) >= 1:
-                        sp["model_response1"] = model_preds[0]
+                    q = str(sp.get("question", "")).strip()
+                    if q:
+                        add_generation_task(f"<image>\n{q}", image_id_path, sp, "model_response1", tokens_harm)
 
         output_line["unsafe_pairs"] = unsafe_pairs
         if safe_nb_pairs:
             output_line["safeNb_pairs"] = safe_nb_pairs
-
         results.append(output_line)
+
+    def run_generation_batch(task_batch):
+        images = [Image.open(task["image_path"]).convert("RGB") for task in task_batch]
+        prompts = [task["prompt"] for task in task_batch]
+        inputs = processor(images=images, text=prompts, padding=True, return_tensors="pt")
+        inputs = _move_inputs(inputs)
+        max_new_tokens = int(task_batch[0]["max_new_tokens"])
+        try:
+            with torch.no_grad():
+                output = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=1.0,
+                    top_p=0.9,
+                    num_beams=1,
+                    num_return_sequences=1,
+                )
+        finally:
+            for image in images:
+                try:
+                    image.close()
+                except Exception:
+                    pass
+        prompt_len = int(inputs["input_ids"].shape[1])
+        for row_idx, task in enumerate(task_batch):
+            generated_ids = output[row_idx, prompt_len:]
+            task["target"][task["key"]] = _decode_prediction(generated_ids)
+
+    def run_generation_batch_with_fallback(task_batch):
+        if not task_batch:
+            return
+        try:
+            run_generation_batch(task_batch)
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if len(task_batch) > 1 and ("out of memory" in message or "cuda" in message):
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                mid = len(task_batch) // 2
+                run_generation_batch_with_fallback(task_batch[:mid])
+                run_generation_batch_with_fallback(task_batch[mid:])
+                return
+            raise
+
+    batch_size = max(1, int(args.generation_batch_size))
+    for max_new_tokens in sorted({task["max_new_tokens"] for task in generation_tasks}):
+        token_tasks = [task for task in generation_tasks if task["max_new_tokens"] == max_new_tokens]
+        for start in tqdm(
+            range(0, len(token_tasks), batch_size),
+            desc=f"ckpt infer cross-sample generate max_tokens={max_new_tokens}",
+        ):
+            run_generation_batch_with_fallback(token_tasks[start : start + batch_size])
 
     os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
     with open(output_file, "w", encoding="utf-8") as f:
