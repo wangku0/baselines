@@ -200,6 +200,8 @@ def main() -> None:
                 "RR": summary.get("RR"),
                 "SARR_sd": summary.get("SARR_sd"),
                 "SARR_safeNb": summary.get("SARR_safeNb"),
+                "retain_ROUGE-L": summary.get("retain_rouge_l_fmeasure", summary.get("average_rouge_l_fmeasure")),
+                "safeNb_ROUGE-L": summary.get("safeNb_rouge_l_fmeasure"),
                 "implicit_clearance_relative": implicit.get("implicit_clearance_relative"),
                 "implicit_clearance_absolute": implicit.get("implicit_clearance_absolute"),
             },

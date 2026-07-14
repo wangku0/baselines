@@ -38,6 +38,8 @@ def main() -> None:
             "SARR_sd": safe.get("SARR_sd", safe.get("SARR")),
             "SARR_safeNb": safe.get("SARR_safeNb"),
             "ROUGE-L": safe.get("average_rouge_l_fmeasure"),
+            "retain_ROUGE-L": safe.get("retain_rouge_l_fmeasure", safe.get("average_rouge_l_fmeasure")),
+            "safeNb_ROUGE-L": safe.get("safeNb_rouge_l_fmeasure"),
             "group_metrics": safe.get("group_metrics"),
             "counts": safe.get("counts"),
             "mode": safe.get("mode"),
