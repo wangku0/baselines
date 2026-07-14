@@ -29,6 +29,21 @@ from src.utility_eval.vlmevalkit_wrapper import wrapper_module_text
 
 
 DEFAULT_DATASETS = ["MME", "MMBench_DEV_EN"]
+SPECIFICITY_DATASET_FLAGS = {
+    "GQA": "GQA",
+    # User-facing alias. VLMEvalKit commonly spells this benchmark as VizWiz.
+    "VISWIZ": "VizWiz",
+    "VIZWIZ": "VizWiz",
+    # ScienceQA image split in VLMEvalKit.
+    "SQA": "ScienceQA_VAL",
+    # VQA-v2 validation split in VLMEvalKit.
+    "VQA": "VQAv2_VAL",
+    "POPE": "POPE",
+    "MMVET": "MMVet",
+    "MM_VET": "MMVet",
+    "MMB_EN": "MMBench_DEV_EN",
+    "MMB_CN": "MMBench_DEV_CN",
+}
 DATASET_SOURCE_URLS = {
     "MME": "https://opencompass.openxlab.space/utils/VLMEval/MME.tsv",
     "MMBench_DEV_EN": "https://opencompass.openxlab.space/utils/benchmarks/MMBench/MMBench_DEV_EN.tsv",
@@ -60,6 +75,32 @@ def _parse_model_spec(specs: Iterable[str]) -> List[Tuple[str, Optional[str]]]:
             raise ValueError(f"Empty model name in --model_spec: {spec}")
         parsed.append((name, adapter.strip() or None))
     return parsed
+
+
+def _selected_specificity_datasets(args: argparse.Namespace) -> List[str]:
+    selected: List[str] = []
+    for attr, dataset in (
+        ("GQA", "GQA"),
+        ("GAQ", "GQA"),
+        ("VisWiz", "VizWiz"),
+        ("VizWiz", "VizWiz"),
+        ("SQA", "ScienceQA_VAL"),
+        ("VQA", "VQAv2_VAL"),
+        ("POPE", "POPE"),
+        ("MMVet", "MMVet"),
+        ("MM_Vet", "MMVet"),
+        ("MMB_EN", "MMBench_DEV_EN"),
+        ("MMB_CN", "MMBench_DEV_CN"),
+    ):
+        if getattr(args, attr, False):
+            selected.append(dataset)
+    if getattr(args, "all_specificity", False):
+        selected.extend(SPECIFICITY_DATASET_FLAGS.values())
+    deduped: List[str] = []
+    for dataset in selected:
+        if dataset not in deduped:
+            deduped.append(dataset)
+    return deduped
 
 
 def _dataset_config(dataset: str) -> Dict[str, str]:
@@ -274,6 +315,23 @@ def main() -> None:
     parser.add_argument("--output_dir", default="integrations/my_method/outputs/utility_eval/vlmevalkit")
     parser.add_argument("--output_config", default=None)
     parser.add_argument("--dataset", action="append", default=None, help="Dataset name. Repeatable.")
+    parser.add_argument("--GQA", action="store_true", help="Add the GQA benchmark.")
+    parser.add_argument("--GAQ", action="store_true", help="Alias for --GQA.")
+    parser.add_argument("--VisWiz", "--VISWIZ", action="store_true", help="Add the VizWiz/VisWiz benchmark.")
+    parser.add_argument("--VizWiz", "--VIZWIZ", action="store_true", help="Add the VizWiz benchmark.")
+    parser.add_argument("--SQA", action="store_true", help="Add the ScienceQA image benchmark.")
+    parser.add_argument("--VQA", action="store_true", help="Add the VQAv2 benchmark.")
+    parser.add_argument("--POPE", action="store_true", help="Add the POPE benchmark.")
+    parser.add_argument("--MMVet", "--MM-Vet", "--MM_VET", action="store_true", help="Add the MMVet benchmark.")
+    parser.add_argument("--MM_Vet", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--MMB_EN", "--MMB-en", action="store_true", help="Add MMBench_DEV_EN.")
+    parser.add_argument("--MMB_CN", "--MMB-cn", action="store_true", help="Add MMBench_DEV_CN.")
+    parser.add_argument(
+        "--all-specificity",
+        "--all_specificity",
+        action="store_true",
+        help="Add GQA, VizWiz, ScienceQA, VQAv2, POPE, MMVet, MMBench EN and MMBench CN.",
+    )
     parser.add_argument(
         "--model_spec",
         action="append",
@@ -308,7 +366,8 @@ def main() -> None:
     cfg = _load_yaml(project_root / args.config)
 
     utility_cfg = cfg.get("utility_eval", {})
-    datasets = args.dataset or utility_cfg.get("datasets") or DEFAULT_DATASETS
+    flagged_datasets = _selected_specificity_datasets(args)
+    datasets = args.dataset or flagged_datasets or utility_cfg.get("datasets") or DEFAULT_DATASETS
     mini_data_root = None
     if args.mini_samples is not None:
         mini_data_root = _lmu_data_root()
