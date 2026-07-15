@@ -260,8 +260,19 @@ def main() -> None:
             with Image.open(task["image_path"]) as img:
                 images.append(img.convert("RGB"))
         prompts = [_prompt_from_text(task["prompt_text"]) for task in tasks]
-        inputs = processor(images=images, text=prompts, padding=True, return_tensors="pt")
+        tokenizer = getattr(processor, "tokenizer", None)
+        old_padding_side = getattr(tokenizer, "padding_side", None)
+        if tokenizer is not None:
+            if getattr(tokenizer, "pad_token_id", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+        try:
+            inputs = processor(images=images, text=prompts, padding=True, return_tensors="pt")
+        finally:
+            if tokenizer is not None and old_padding_side is not None:
+                tokenizer.padding_side = old_padding_side
         inputs = _move_inputs(inputs, input_device, model.dtype)
+        pad_token_id = getattr(tokenizer, "pad_token_id", None)
         primary_ratio = controller.max_delta_norm_ratio
         retry_ratios = [primary_ratio] + [ratio for ratio in fallback_ratios if ratio != primary_ratio]
         output = None
@@ -279,6 +290,7 @@ def main() -> None:
                         temperature=1.0,
                         top_p=0.9,
                         num_beams=1,
+                        pad_token_id=pad_token_id,
                     )
                 break
             except RuntimeError as exc:
