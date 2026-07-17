@@ -31,6 +31,8 @@ class FlowInterventionStats:
     mean_total_risk_sum: float = 0.0
     mean_delta_norm_sum: float = 0.0
     risk_gate_mode: str = "fused"
+    strength: float = 0.0
+    decode_strength: Optional[float] = None
     trace_dropped: int = 0
     numerical_skips: int = 0
     numerical_retries: int = 0
@@ -46,6 +48,8 @@ class FlowInterventionStats:
             "mean_total_risk": self.mean_total_risk_sum / denom,
             "mean_delta_norm": self.mean_delta_norm_sum / denom,
             "risk_gate_mode": self.risk_gate_mode,
+            "strength": self.strength,
+            "decode_strength": self.decode_strength,
             "trace_dropped": self.trace_dropped,
             "numerical_skips": self.numerical_skips,
             "numerical_retries": self.numerical_retries,
@@ -118,6 +122,7 @@ class InferenceTimeFlowController:
         flow_teacher_path: Optional[str] = None,
         hidden_layers: Optional[Iterable[int]] = None,
         strength: float = 0.25,
+        decode_strength: Optional[float] = None,
         risk_gate_threshold: float = 0.0,
         risk_gate_mode: str = "fused",
         max_delta_norm_ratio: float = 0.20,
@@ -157,6 +162,7 @@ class InferenceTimeFlowController:
             )
         self.static_cond_dim = int(self.ckpt.get("static_cond_dim", self.cond_dim - 1 if self.use_dynamic_r_imp else self.cond_dim))
         self.strength = float(strength)
+        self.decode_strength = None if decode_strength is None else float(decode_strength)
         self.risk_gate_threshold = float(risk_gate_threshold)
         self.risk_gate_mode = str(risk_gate_mode).lower()
         if self.risk_gate_mode not in {"fused", "implicit"}:
@@ -173,9 +179,16 @@ class InferenceTimeFlowController:
         self.handles: List[Any] = []
         self.stats = FlowInterventionStats()
         self.stats.risk_gate_mode = self.risk_gate_mode
+        self.stats.strength = self.strength
+        self.stats.decode_strength = self.decode_strength
         self.risk_trace_max_records = int(risk_trace_max_records)
         self.risk_trace: List[Dict[str, Any]] = []
         self._enabled = False
+
+    def _phase_strength(self, phase: str) -> float:
+        if phase == "decode" and self.decode_strength is not None:
+            return self.decode_strength
+        return self.strength
 
     def _append_trace(
         self,
@@ -189,6 +202,7 @@ class InferenceTimeFlowController:
         gate: float,
         active: bool,
         delta_norm: float,
+        phase_strength: Optional[float] = None,
         skip_reason: Optional[str] = None,
     ) -> None:
         if self.risk_trace_max_records <= 0:
@@ -209,7 +223,9 @@ class InferenceTimeFlowController:
                 "active": bool(active),
                 "delta_norm": float(delta_norm),
                 "skip_reason": skip_reason,
-                "strength": self.strength,
+                "strength": float(self.strength if phase_strength is None else phase_strength),
+                "base_strength": float(self.strength),
+                "decode_strength": None if self.decode_strength is None else float(self.decode_strength),
                 "risk_gate_threshold": self.risk_gate_threshold,
                 "max_delta_norm_ratio": self.max_delta_norm_ratio,
                 "group_id": int(self._context_group_id),
@@ -271,6 +287,7 @@ class InferenceTimeFlowController:
         cond, risk = self._condition(x, hidden_layer)
         explicit_risk = torch.tensor([[self._context_explicit_risk]], device=risk.device, dtype=risk.dtype)
         call_index = self.stats.calls + 1
+        phase_strength = self._phase_strength(phase)
         if not torch.isfinite(x).all() or not torch.isfinite(cond).all() or not torch.isfinite(risk).all():
             self._append_trace(
                 call_index=call_index,
@@ -282,6 +299,7 @@ class InferenceTimeFlowController:
                 gate=0.0,
                 active=False,
                 delta_norm=0.0,
+                phase_strength=phase_strength,
                 skip_reason="nonfinite_condition",
             )
             self.stats.calls += 1
@@ -293,7 +311,7 @@ class InferenceTimeFlowController:
             total_risk = 0.5 * explicit_risk + 0.5 * risk
         threshold = self.risk_gate_threshold
         gate = torch.clamp((total_risk - threshold) / max(1.0 - threshold, 1e-6), 0.0, 1.0)
-        if float(gate.item()) <= 0.0 or self.strength == 0.0:
+        if float(gate.item()) <= 0.0 or phase_strength == 0.0:
             self._append_trace(
                 call_index=call_index,
                 hidden_layer=hidden_layer,
@@ -304,6 +322,7 @@ class InferenceTimeFlowController:
                 gate=float(gate.item()),
                 active=False,
                 delta_norm=0.0,
+                phase_strength=phase_strength,
             )
             self.stats.calls += 1
             self.stats.mean_risk_sum += float(risk.item())
@@ -325,12 +344,13 @@ class InferenceTimeFlowController:
                 gate=float(gate.item()),
                 active=False,
                 delta_norm=0.0,
+                phase_strength=phase_strength,
                 skip_reason="nonfinite_velocity",
             )
             self.stats.calls += 1
             self.stats.numerical_skips += 1
             return h
-        delta = self.strength * gate[0, 0].to(velocity.dtype) * velocity
+        delta = phase_strength * gate[0, 0].to(velocity.dtype) * velocity
         if not torch.isfinite(delta).all():
             self._append_trace(
                 call_index=call_index,
@@ -342,6 +362,7 @@ class InferenceTimeFlowController:
                 gate=float(gate.item()),
                 active=False,
                 delta_norm=0.0,
+                phase_strength=phase_strength,
                 skip_reason="nonfinite_delta",
             )
             self.stats.calls += 1
@@ -364,6 +385,7 @@ class InferenceTimeFlowController:
                 gate=float(gate.item()),
                 active=False,
                 delta_norm=float(delta.norm().detach().cpu()),
+                phase_strength=phase_strength,
                 skip_reason="nonfinite_output",
             )
             self.stats.calls += 1
@@ -380,6 +402,7 @@ class InferenceTimeFlowController:
             gate=float(gate.item()),
             active=True,
             delta_norm=delta_norm_value,
+            phase_strength=phase_strength,
         )
         self.stats.calls += 1
         self.stats.active_calls += 1

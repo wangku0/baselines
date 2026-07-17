@@ -54,6 +54,12 @@ def main() -> None:
     parser.add_argument("--gpu-memory", default=None, help="Alias for --max-memory-per-gpu, e.g. 75GiB.")
     parser.add_argument("--a800-75g", action="store_true", help="Convenience preset: --max-memory-per-gpu 75GiB.")
     parser.add_argument("--strength", type=float, default=0.25)
+    parser.add_argument(
+        "--decode-strength",
+        type=float,
+        default=None,
+        help="Optional decode-only intervention strength. Omit to keep the original single-strength behavior.",
+    )
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
     parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
@@ -122,6 +128,8 @@ def main() -> None:
             "--risk_trace_max_records",
             str(args.risk_trace_max_records),
         ]
+        if args.decode_strength is not None:
+            command.extend(["--decode_strength", str(args.decode_strength)])
         if args.max_memory_per_gpu:
             command.extend(["--max_memory_per_gpu", args.max_memory_per_gpu])
         if args.checkpoint_path:
@@ -174,6 +182,11 @@ def main() -> None:
             str(args.output_dir),
             "--strength",
             str(args.strength),
+            *(
+                ["--decode-strength", str(args.decode_strength)]
+                if args.decode_strength is not None
+                else []
+            ),
             "--risk-gate-threshold",
             str(args.risk_gate_threshold),
             "--risk-gate-mode",

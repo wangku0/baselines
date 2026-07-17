@@ -101,6 +101,12 @@ def main() -> None:
     parser.add_argument("--sd-eval-file", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=Path("integrations/my_method/infer_time_flow/outputs/unified_eval"))
     parser.add_argument("--strength", type=float, default=0.25)
+    parser.add_argument(
+        "--decode-strength",
+        type=float,
+        default=None,
+        help="Optional decode-only intervention strength. Omit to use --strength for both prefill and decode.",
+    )
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
     parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
@@ -147,6 +153,7 @@ def main() -> None:
         config_path=args.config,
         flow_teacher_path=args.flow_teacher_path,
         strength=args.strength,
+        decode_strength=args.decode_strength,
         risk_gate_threshold=args.risk_gate_threshold,
         risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,

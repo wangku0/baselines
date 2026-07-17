@@ -127,6 +127,13 @@ def main() -> None:
     parser.add_argument("--gpu_memory", default=None, help="Alias for --max_memory_per_gpu, e.g. 75GiB.")
     parser.add_argument("--a800_75g", action="store_true", help="Convenience preset: --max_memory_per_gpu 75GiB.")
     parser.add_argument("--strength", type=float, default=0.25)
+    parser.add_argument(
+        "--decode_strength",
+        "--decode-strength",
+        type=float,
+        default=None,
+        help="Optional decode-only intervention strength. Omit to use --strength for both prefill and decode.",
+    )
     parser.add_argument("--risk_gate_threshold", type=float, default=0.0)
     parser.add_argument("--risk_gate_mode", choices=["fused", "implicit"], default="fused")
     parser.add_argument("--max_delta_norm_ratio", type=float, default=0.20)
@@ -174,6 +181,7 @@ def main() -> None:
         config_path=args.config,
         flow_teacher_path=args.flow_teacher_path,
         strength=args.strength,
+        decode_strength=args.decode_strength,
         risk_gate_threshold=args.risk_gate_threshold,
         risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
@@ -368,7 +376,14 @@ def main() -> None:
                         if q.strip():
                             add_task(output_line, ("safeNb_pairs", pair_idx, "model_response1"), f"<image>\n{q}", image_id_path, 0.0, 1)
 
-        batch_size = int(args.cross_sample_batch_size)
+        requested_batch_size = int(args.cross_sample_batch_size)
+        batch_size = 1
+        if requested_batch_size > 1:
+            print(
+                "LLaVA cross-sample batched generation is disabled because "
+                "multi-image padded batches can produce corrupted text; "
+                f"falling back to batch_size=1 from requested {requested_batch_size}."
+            )
         tokenizer = getattr(processor, "tokenizer", None)
         old_padding_side = getattr(tokenizer, "padding_side", None) if tokenizer is not None else None
         if tokenizer is not None:
