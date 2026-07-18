@@ -33,6 +33,7 @@ class FlowInterventionStats:
     risk_gate_mode: str = "fused"
     strength: float = 0.0
     decode_strength: Optional[float] = None
+    intervention_group_ids: Optional[List[int]] = None
     trace_dropped: int = 0
     numerical_skips: int = 0
     numerical_retries: int = 0
@@ -50,6 +51,7 @@ class FlowInterventionStats:
             "risk_gate_mode": self.risk_gate_mode,
             "strength": self.strength,
             "decode_strength": self.decode_strength,
+            "intervention_group_ids": self.intervention_group_ids,
             "trace_dropped": self.trace_dropped,
             "numerical_skips": self.numerical_skips,
             "numerical_retries": self.numerical_retries,
@@ -128,6 +130,7 @@ class InferenceTimeFlowController:
         max_delta_norm_ratio: float = 0.20,
         explicit_risk: float = 1.0,
         group_id: int = 0,
+        intervention_group_ids: Optional[Iterable[int]] = None,
         intervene_on_prefill: bool = True,
         intervene_on_decode: bool = True,
         risk_trace_max_records: int = 200000,
@@ -179,6 +182,11 @@ class InferenceTimeFlowController:
         self.max_delta_norm_ratio = float(max_delta_norm_ratio)
         self.explicit_risk = float(explicit_risk)
         self.group_id = int(group_id)
+        self.intervention_group_ids = (
+            None
+            if intervention_group_ids is None
+            else {int(group_id) for group_id in intervention_group_ids}
+        )
         self._context_explicit_risk = float(explicit_risk)
         self._context_group_id = int(group_id)
         self._batch_explicit_risks: Optional[List[float]] = None
@@ -190,6 +198,9 @@ class InferenceTimeFlowController:
         self.stats.risk_gate_mode = self.risk_gate_mode
         self.stats.strength = self.strength
         self.stats.decode_strength = self.decode_strength
+        self.stats.intervention_group_ids = (
+            None if self.intervention_group_ids is None else sorted(self.intervention_group_ids)
+        )
         self.risk_trace_max_records = int(risk_trace_max_records)
         self.risk_trace: List[Dict[str, Any]] = []
         self._enabled = False
@@ -235,6 +246,9 @@ class InferenceTimeFlowController:
                 "strength": float(self.strength if phase_strength is None else phase_strength),
                 "base_strength": float(self.strength),
                 "decode_strength": None if self.decode_strength is None else float(self.decode_strength),
+                "intervention_group_ids": (
+                    None if self.intervention_group_ids is None else sorted(self.intervention_group_ids)
+                ),
                 "risk_gate_threshold": self.risk_gate_threshold,
                 "max_delta_norm_ratio": self.max_delta_norm_ratio,
                 "group_id": int(self._context_group_id),
@@ -320,6 +334,28 @@ class InferenceTimeFlowController:
             total_risk = risk
         else:
             total_risk = 0.5 * explicit_risk + 0.5 * risk
+        if (
+            self.intervention_group_ids is not None
+            and int(self._context_group_id) not in self.intervention_group_ids
+        ):
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float(total_risk.item()),
+                gate=0.0,
+                active=False,
+                delta_norm=0.0,
+                phase_strength=phase_strength,
+                skip_reason="group_not_allowed",
+            )
+            self.stats.calls += 1
+            self.stats.mean_risk_sum += float(risk.item())
+            self.stats.mean_explicit_risk_sum += float(explicit_risk.item())
+            self.stats.mean_total_risk_sum += float(total_risk.item())
+            return h
         threshold = self.risk_gate_threshold
         gate = torch.clamp((total_risk - threshold) / max(1.0 - threshold, 1e-6), 0.0, 1.0)
         if float(gate.item()) <= 0.0 or phase_strength == 0.0:

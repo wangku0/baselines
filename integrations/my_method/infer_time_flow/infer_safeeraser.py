@@ -32,6 +32,17 @@ SAFEERASER_TARGET_MODULES = (
 SAFE_EMPTY_RESPONSE = "I cannot provide a response."
 
 
+def _parse_group_ids(value: str | None) -> list[int] | None:
+    if value is None or not str(value).strip():
+        return None
+    group_ids = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if item:
+            group_ids.append(int(item))
+    return group_ids
+
+
 def load_safeeraser_checkpoint(model, checkpoint_path: str, r: int = 32, alpha: int = 256):
     print(f"Loading SafeEraser checkpoint: {checkpoint_path}")
     peft_config = LoraConfig(
@@ -147,6 +158,12 @@ def main() -> None:
         help="Comma-separated max-delta ratios retried after a numerical generation error, e.g. 5,2.",
     )
     parser.add_argument("--risk_trace_max_records", type=int, default=200000)
+    parser.add_argument(
+        "--intervention_group_ids",
+        "--intervention-group-ids",
+        default=None,
+        help="Optional comma-separated group ids allowed to receive Flow intervention, e.g. '0'. Omit for all groups.",
+    )
     parser.add_argument("--no_prefill_intervention", action="store_true")
     parser.add_argument("--no_decode_intervention", action="store_true")
     args = parser.parse_args()
@@ -189,6 +206,7 @@ def main() -> None:
         risk_gate_threshold=args.risk_gate_threshold,
         risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
+        intervention_group_ids=_parse_group_ids(args.intervention_group_ids),
         risk_trace_max_records=args.risk_trace_max_records,
         intervene_on_prefill=not args.no_prefill_intervention,
         intervene_on_decode=not args.no_decode_intervention,

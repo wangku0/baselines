@@ -33,6 +33,17 @@ from src.stage3_lora_utils import load_base_model_and_processor, sync_stage3_lay
 from src.utils import load_config
 
 
+def _parse_group_ids(value: str | None) -> list[int] | None:
+    if value is None or not str(value).strip():
+        return None
+    group_ids = []
+    for item in str(value).split(","):
+        item = item.strip()
+        if item:
+            group_ids.append(int(item))
+    return group_ids
+
+
 def _sample_context(sample: dict) -> tuple[float, int]:
     sample_type = sample.get("sample_type")
     if sample_type in {"harmful_trigger", "sd_response"}:
@@ -115,6 +126,11 @@ def main() -> None:
     )
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
     parser.add_argument("--risk-trace-max-records", type=int, default=200000)
+    parser.add_argument(
+        "--intervention-group-ids",
+        default=None,
+        help="Optional comma-separated group ids allowed to receive Flow intervention, e.g. '0'. Omit for all groups.",
+    )
     parser.add_argument("--safeeraser-lora-r", type=int, default=32)
     parser.add_argument("--safeeraser-lora-alpha", type=int, default=256)
     add_model_memory_args(parser)
@@ -161,6 +177,7 @@ def main() -> None:
         risk_gate_threshold=args.risk_gate_threshold,
         risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
+        intervention_group_ids=_parse_group_ids(args.intervention_group_ids),
         risk_trace_max_records=args.risk_trace_max_records,
         intervene_on_prefill=not args.no_prefill_intervention,
         intervene_on_decode=not args.no_decode_intervention,

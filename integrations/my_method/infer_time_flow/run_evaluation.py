@@ -73,6 +73,11 @@ def main() -> None:
         help="Comma-separated max-delta ratios retried after numerical generation errors.",
     )
     parser.add_argument("--risk-trace-max-records", type=int, default=200000)
+    parser.add_argument(
+        "--intervention-group-ids",
+        default=None,
+        help="Optional comma-separated group ids allowed to receive Flow intervention, e.g. '0'. Omit for all groups.",
+    )
     parser.add_argument("--no-prefill-intervention", action="store_true")
     parser.add_argument("--no-decode-intervention", action="store_true")
     parser.add_argument("--skip-inference", action="store_true")
@@ -132,6 +137,8 @@ def main() -> None:
             "--risk_trace_max_records",
             str(args.risk_trace_max_records),
         ]
+        if args.intervention_group_ids:
+            command.extend(["--intervention_group_ids", args.intervention_group_ids])
         if args.decode_strength is not None:
             command.extend(["--decode_strength", str(args.decode_strength)])
         if args.max_memory_per_gpu:
@@ -200,6 +207,8 @@ def main() -> None:
             "--risk-trace-max-records",
             str(args.risk_trace_max_records),
         ]
+        if args.intervention_group_ids:
+            implicit_command.extend(["--intervention-group-ids", args.intervention_group_ids])
         sd_eval_file = args.sd_eval_file or Path(args.eval_file)
         implicit_command.extend(["--sd-eval-file", str(sd_eval_file.resolve())])
         if args.max_memory_per_gpu:
