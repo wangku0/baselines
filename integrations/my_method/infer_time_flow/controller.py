@@ -165,8 +165,17 @@ class InferenceTimeFlowController:
         self.decode_strength = None if decode_strength is None else float(decode_strength)
         self.risk_gate_threshold = float(risk_gate_threshold)
         self.risk_gate_mode = str(risk_gate_mode).lower()
-        if self.risk_gate_mode not in {"fused", "implicit"}:
-            raise ValueError(f"Unsupported risk_gate_mode={risk_gate_mode!r}; use 'fused' or 'implicit'.")
+        if self.risk_gate_mode not in {
+            "fused",
+            "implicit",
+            "prefill_fused_decode_implicit",
+            "prefill_fused_decode_fused",
+        }:
+            raise ValueError(
+                f"Unsupported risk_gate_mode={risk_gate_mode!r}; "
+                "use 'fused', 'implicit', 'prefill_fused_decode_implicit', "
+                "or 'prefill_fused_decode_fused'."
+            )
         self.max_delta_norm_ratio = float(max_delta_norm_ratio)
         self.explicit_risk = float(explicit_risk)
         self.group_id = int(group_id)
@@ -305,7 +314,9 @@ class InferenceTimeFlowController:
             self.stats.calls += 1
             self.stats.numerical_skips += 1
             return h
-        if self.risk_gate_mode == "implicit":
+        if self.risk_gate_mode == "implicit" or (
+            self.risk_gate_mode == "prefill_fused_decode_implicit" and phase == "decode"
+        ):
             total_risk = risk
         else:
             total_risk = 0.5 * explicit_risk + 0.5 * risk

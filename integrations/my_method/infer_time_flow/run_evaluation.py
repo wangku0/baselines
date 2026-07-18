@@ -61,7 +61,11 @@ def main() -> None:
         help="Optional decode-only intervention strength. Omit to keep the original single-strength behavior.",
     )
     parser.add_argument("--risk-gate-threshold", type=float, default=0.0)
-    parser.add_argument("--risk-gate-mode", choices=["fused", "implicit"], default="fused")
+    parser.add_argument(
+        "--risk-gate-mode",
+        choices=["fused", "implicit", "prefill_fused_decode_implicit", "prefill_fused_decode_fused"],
+        default="fused",
+    )
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
     parser.add_argument(
         "--numerical-fallback-ratios",
