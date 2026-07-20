@@ -9,6 +9,7 @@ import torch
 
 from ..risk_space.recommended_config import RecommendedRiskConfig, load_recommended_risk_config, save_resolved_recommended_config
 from ..risk_space.transport_layer_selection import select_layers_by_risk_transport
+from ..extract_safe_prefix_hidden_states import safe_prefix_hidden_dir
 from ..utils import ensure_dir, logger, resolve_path, save_json
 from .utils import compute_risk_coefficients, compute_risk_delta_coefficients
 
@@ -35,6 +36,16 @@ def _load_hidden_cache(config: Dict[str, Any], split: str) -> Dict[str, Any]:
     return torch.load(path, map_location="cpu", weights_only=False)
 
 
+def _load_safe_prefix_hidden_cache(config: Dict[str, Any], split: str) -> Dict[str, Any]:
+    path = safe_prefix_hidden_dir(config) / f"{split}_safe_prefix_hidden_states.pt"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing safe answer prefix hidden cache: {path}. "
+            "Run scripts/01b_extract_safe_prefix_hidden_states.py first, or use flow target safe_neighbor."
+        )
+    return torch.load(path, map_location="cpu", weights_only=False)
+
+
 def _condition(x: torch.Tensor, coeff: torch.Tensor, r_explicit: float, group_id: int) -> torch.Tensor:
     group = torch.zeros(3, dtype=torch.float32)
     group[int(group_id)] = 1.0
@@ -54,16 +65,21 @@ def _flow_target_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "mix": "mixed",
         "alpha_safenb_beta_retain": "mixed",
         "safe_retain_mix": "mixed",
+        "safe_answer_prefix": "safe_answer_prefix",
+        "safe_prefix": "safe_answer_prefix",
+        "answer_prefix": "safe_answer_prefix",
     }
     if mode not in aliases:
         raise ValueError(
             "Unsupported flow_matching.target.mode: "
-            f"{target_cfg.get('mode')!r}. Use safe_neighbor, retain, or mixed."
+            f"{target_cfg.get('mode')!r}. Use safe_neighbor, retain, mixed, or safe_answer_prefix."
         )
     mode = aliases[mode]
     safe_weight = float(target_cfg.get("safe_weight", target_cfg.get("alpha_safe", 0.5)))
     retain_weight = float(target_cfg.get("retain_weight", target_cfg.get("beta_retain", 0.5)))
     if mode == "safe_neighbor":
+        safe_weight, retain_weight = 1.0, 0.0
+    elif mode == "safe_answer_prefix":
         safe_weight, retain_weight = 1.0, 0.0
     elif mode == "retain":
         safe_weight, retain_weight = 0.0, 1.0
@@ -76,6 +92,9 @@ def _flow_target_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "mode": mode,
         "safe_weight": safe_weight,
         "retain_weight": retain_weight,
+        "safe_answer_prefix_tokens": int(target_cfg.get("safe_answer_prefix_tokens", 16)),
+        "safe_prefix_hidden_states_dir": target_cfg.get("safe_prefix_hidden_states_dir")
+        or config.get("outputs", {}).get("safe_prefix_hidden_states_dir"),
     }
 
 
@@ -142,9 +161,22 @@ def build_flow_features(
             f"({actual_pooling}), but config requested {requested_pooling!r}. "
             "Set flow_matching.representation.pooling to 'stage1_last_input_token_cache' or implement response-span extraction."
         )
+    target_cfg = _flow_target_config(config)
     hidden = _load_hidden_cache(config, split)
     metadata: List[Dict[str, Any]] = hidden["metadata"]
     hidden_by_layer = {int(k): v.float() for k, v in hidden["hidden_states"].items()}
+    safe_prefix_metadata: List[Dict[str, Any]] = []
+    safe_prefix_by_layer: Dict[int, torch.Tensor] = {}
+    safe_prefix_by_pair: Dict[str, int] = {}
+    if target_cfg["mode"] == "safe_answer_prefix":
+        safe_prefix = _load_safe_prefix_hidden_cache(config, split)
+        safe_prefix_metadata = safe_prefix["metadata"]
+        safe_prefix_by_layer = {int(k): v.float() for k, v in safe_prefix["hidden_states"].items()}
+        safe_prefix_by_pair = {
+            str(m["pair_id"]): i
+            for i, m in enumerate(safe_prefix_metadata)
+            if m.get("sample_type") == "safe_neighbor" and m.get("pair_id")
+        }
     basis, centers = _load_risk_basis(Path(rec.risk_basis_path))
     metrics_dir = config.get("stage2", {}).get("outputs", {}).get(
         "metrics_dir", "integrations/my_method/outputs/metrics/stage2"
@@ -189,28 +221,48 @@ def build_flow_features(
 
     examples = []
     layer_stats = defaultdict(list)
-    target_cfg = _flow_target_config(config)
     for pair_index, pid in enumerate(pair_ids):
         hid = harmful_by_pair[pid]
         sid = safe_by_pair[pid]
-        rid = _choose_retain_id(
-            harmful_meta=metadata[idx_by_id[hid]],
-            retain_ids=retain_ids,
-            retain_by_sample_index=retain_by_sample_index,
-            pair_index=pair_index,
+        rid = (
+            _choose_retain_id(
+                harmful_meta=metadata[idx_by_id[hid]],
+                retain_ids=retain_ids,
+                retain_by_sample_index=retain_by_sample_index,
+                pair_index=pair_index,
+            )
+            if target_cfg["mode"] in {"retain", "mixed"}
+            else None
         )
         hi = idx_by_id[hid]
         si = idx_by_id[sid]
-        ri = idx_by_id[rid]
+        ri = idx_by_id[rid] if rid is not None else None
+        prefix_i = safe_prefix_by_pair.get(pid)
+        if target_cfg["mode"] == "safe_answer_prefix" and prefix_i is None:
+            logger.warning("Skipping pair %s because safe answer prefix hidden is missing.", pid)
+            continue
         for layer in rec.recommended_hidden_layers:
             xh = hidden_by_layer[layer][hi].float()
             xs = hidden_by_layer[layer][si].float()
-            xr = hidden_by_layer[layer][ri].float()
-            x_target = target_cfg["safe_weight"] * xs + target_cfg["retain_weight"] * xr
+            if target_cfg["mode"] == "safe_answer_prefix":
+                if layer not in safe_prefix_by_layer:
+                    raise KeyError(
+                        f"Layer {layer} is missing from safe answer prefix hidden cache. "
+                        "Re-run safe-prefix extraction with the same selected/all layers as Stage 1."
+                    )
+                xr = None
+                x_target = safe_prefix_by_layer[layer][prefix_i].float()
+                target_sample_id = str(safe_prefix_metadata[prefix_i].get("id", sid)) + ":safe_answer_prefix"
+            else:
+                if ri is None:
+                    raise ValueError(f"Flow target {target_cfg['mode']} requires retain samples.")
+                xr = hidden_by_layer[layer][ri].float()
+                x_target = target_cfg["safe_weight"] * xs + target_cfg["retain_weight"] * xr
+                target_sample_id = sid if target_cfg["mode"] == "safe_neighbor" else rid if target_cfg["mode"] == "retain" else f"{sid}+{rid}"
             delta_to_target = xh - x_target
             ch = compute_risk_delta_coefficients(delta_to_target[None, :], layer, rec, basis)[0]
             cs = compute_risk_coefficients(xs[None, :], layer, rec, basis, centers)[0]
-            cr = compute_risk_coefficients(xr[None, :], layer, rec, basis, centers)[0]
+            cr = compute_risk_coefficients(xr[None, :], layer, rec, basis, centers)[0] if xr is not None else torch.zeros_like(cs)
             ct = compute_risk_coefficients(x_target[None, :], layer, rec, basis, centers)[0]
             examples.append(
                 {
@@ -218,10 +270,11 @@ def build_flow_features(
                     "layer": int(layer),
                     "pair_id": pid,
                     "sample_id": hid,
-                    "target_sample_id": sid if target_cfg["mode"] == "safe_neighbor" else rid if target_cfg["mode"] == "retain" else f"{sid}+{rid}",
+                    "target_sample_id": target_sample_id,
                     "target_mode": target_cfg["mode"],
                     "target_safe_weight": float(target_cfg["safe_weight"]),
                     "target_retain_weight": float(target_cfg["retain_weight"]),
+                    "safe_answer_prefix_tokens": target_cfg.get("safe_answer_prefix_tokens"),
                     "safe_sample_id": sid,
                     "retain_sample_id": rid,
                     "x0": xh,
@@ -231,7 +284,8 @@ def build_flow_features(
             )
             layer_stats[f"delta_norm_layer_{layer}"].append(float(torch.norm(x_target - xh)))
             layer_stats[f"safe_delta_norm_layer_{layer}"].append(float(torch.norm(xs - xh)))
-            layer_stats[f"retain_delta_norm_layer_{layer}"].append(float(torch.norm(xr - xh)))
+            if xr is not None:
+                layer_stats[f"retain_delta_norm_layer_{layer}"].append(float(torch.norm(xr - xh)))
             layer_stats[f"risk_coeff_h_norm_layer_{layer}"].append(float(torch.norm(ch)))
             layer_stats[f"risk_delta_coeff_h_target_norm_layer_{layer}"].append(float(torch.norm(ch)))
             layer_stats[f"risk_coeff_s_norm_layer_{layer}"].append(float(torch.norm(cs)))
@@ -260,6 +314,12 @@ def build_flow_features(
                     "cond": _condition(x, c, explicit.get(sid, 0.0), group_id),
                 }
             )
+
+    if not examples:
+        raise ValueError(
+            "No flow examples were built. If using flow_matching.target.mode=safe_answer_prefix, "
+            "check that the safe-prefix hidden cache contains matching pair_id values."
+        )
 
     hidden_dim = int(examples[0]["x0"].numel())
     static_cond_dim = int(examples[0]["cond"].numel())
@@ -302,6 +362,7 @@ def build_flow_features(
         "flow_target_mode": target_cfg["mode"],
         "flow_target_safe_weight": target_cfg["safe_weight"],
         "flow_target_retain_weight": target_cfg["retain_weight"],
+        "flow_target_safe_answer_prefix_tokens": target_cfg.get("safe_answer_prefix_tokens"),
         "representation_pooling": actual_pooling,
         "requested_representation_pooling": requested_pooling,
         "source_path": rec.source_path,

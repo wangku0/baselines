@@ -74,9 +74,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--flow_target",
-        choices=["safe_neighbor", "safenb", "safe", "retain", "mixed", "mix"],
+        choices=["safe_neighbor", "safenb", "safe", "retain", "mixed", "mix", "safe_answer_prefix", "safe_prefix", "answer_prefix"],
         default=None,
         help="Override flow_matching.target.mode. Default keeps YAML behavior.",
+    )
+    parser.add_argument(
+        "--safe_prefix_hidden_states_dir",
+        default=None,
+        help="Hidden cache directory produced by 01b_extract_safe_prefix_hidden_states.py for --flow_target safe_answer_prefix.",
+    )
+    parser.add_argument(
+        "--safe_prefix_tokens",
+        type=int,
+        default=None,
+        help="Expected safe answer prefix token count for --flow_target safe_answer_prefix metadata.",
     )
     parser.add_argument(
         "--flow_target_safe_weight",
@@ -119,6 +130,10 @@ def main() -> None:
         config.setdefault("flow_matching", {})["output_dir"] = args.flow_output_dir
     if args.flow_target:
         config.setdefault("flow_matching", {}).setdefault("target", {})["mode"] = args.flow_target
+    if args.safe_prefix_hidden_states_dir:
+        config.setdefault("flow_matching", {}).setdefault("target", {})["safe_prefix_hidden_states_dir"] = args.safe_prefix_hidden_states_dir
+    if args.safe_prefix_tokens is not None:
+        config.setdefault("flow_matching", {}).setdefault("target", {})["safe_answer_prefix_tokens"] = int(args.safe_prefix_tokens)
     if args.flow_target_safe_weight is not None:
         config.setdefault("flow_matching", {}).setdefault("target", {})["safe_weight"] = float(args.flow_target_safe_weight)
     if args.flow_target_retain_weight is not None:
@@ -162,6 +177,8 @@ def main() -> None:
                 existing_target.get("mode") != target_cfg.get("mode")
                 or abs(float(existing_target.get("safe_weight", 0.0)) - float(target_cfg.get("safe_weight", 0.0))) > 1e-6
                 or abs(float(existing_target.get("retain_weight", 0.0)) - float(target_cfg.get("retain_weight", 0.0))) > 1e-6
+                or int(existing_target.get("safe_answer_prefix_tokens", 16)) != int(target_cfg.get("safe_answer_prefix_tokens", 16))
+                or str(existing_target.get("safe_prefix_hidden_states_dir")) != str(target_cfg.get("safe_prefix_hidden_states_dir"))
             ):
                 print("[reuse_existing] Stage 2.5 Flow teacher: existing target differs from requested target; recomputing.")
                 print(f"  - existing: {existing_target}")

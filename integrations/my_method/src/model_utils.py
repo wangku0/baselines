@@ -320,3 +320,88 @@ def prepare_vl_batch_inputs(
 
     inputs = processor(text=texts, images=images, padding=True, return_tensors="pt")
     return _move_inputs_to_device(inputs, device)
+
+
+def prepare_vl_inputs_with_assistant_prefix(
+    processor,
+    image_path: str,
+    instruction: str,
+    assistant_prefix: str,
+    device: Optional[torch.device] = None,
+    *,
+    max_pixels: Optional[int] = None,
+):
+    image_path_obj = Path(image_path)
+    if not image_path_obj.exists():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+    with Image.open(image_path_obj) as img:
+        img.convert("RGB")
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "image": str(image_path_obj),
+                    **({"max_pixels": int(max_pixels)} if max_pixels is not None else {}),
+                },
+                {"type": "text", "text": instruction},
+            ],
+        },
+        {"role": "assistant", "content": assistant_prefix},
+    ]
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+
+    if uses_qwen_vision_utils(processor):
+        image_inputs, video_inputs = process_vision_info(messages)
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+    else:
+        image = Image.open(image_path_obj).convert("RGB")
+        inputs = processor(text=[text], images=[image], padding=True, return_tensors="pt")
+
+    return _move_inputs_to_device(inputs, device)
+
+
+def prepare_vl_batch_inputs_with_assistant_prefix(
+    processor,
+    samples: list[Dict[str, Any]],
+    device: Optional[torch.device] = None,
+    *,
+    max_pixels: Optional[int] = None,
+):
+    if uses_qwen_vision_utils(processor):
+        raise NotImplementedError("Batched safe-prefix hidden extraction is not implemented for Qwen processors.")
+
+    texts = []
+    images = []
+    for sample in samples:
+        image_path_obj = Path(sample["image_path"])
+        if not image_path_obj.exists():
+            raise FileNotFoundError(f"Image not found: {sample['image_path']}")
+        image = Image.open(image_path_obj).convert("RGB")
+        images.append(image)
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "image": str(image_path_obj),
+                        **({"max_pixels": int(max_pixels)} if max_pixels is not None else {}),
+                    },
+                    {"type": "text", "text": sample["instruction"]},
+                ],
+            },
+            {"role": "assistant", "content": sample["assistant_prefix"]},
+        ]
+        texts.append(processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False))
+
+    inputs = processor(text=texts, images=images, padding=True, return_tensors="pt")
+    return _move_inputs_to_device(inputs, device)
