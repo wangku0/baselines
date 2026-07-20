@@ -223,6 +223,9 @@ class InferenceTimeFlowController:
         active: bool,
         delta_norm: float,
         phase_strength: Optional[float] = None,
+        target_dist: Optional[float] = None,
+        proj_ratio: Optional[float] = None,
+        target_basis: Optional[str] = None,
         skip_reason: Optional[str] = None,
     ) -> None:
         if self.risk_trace_max_records <= 0:
@@ -242,6 +245,9 @@ class InferenceTimeFlowController:
                 "gate": float(gate),
                 "active": bool(active),
                 "delta_norm": float(delta_norm),
+                "target_dist": None if target_dist is None else float(target_dist),
+                "proj_ratio": None if proj_ratio is None else float(proj_ratio),
+                "target_basis": target_basis,
                 "skip_reason": skip_reason,
                 "strength": float(self.strength if phase_strength is None else phase_strength),
                 "base_strength": float(self.strength),
@@ -420,6 +426,10 @@ class InferenceTimeFlowController:
             delta_norm = delta.norm()
             if delta_norm > max_norm:
                 delta = delta * (max_norm / delta_norm)
+        target_dist_value = float(velocity.norm().detach().cpu())
+        proj_ratio_value = float(
+            torch.dot(delta.flatten(), velocity.flatten()).div(velocity.norm().pow(2).clamp_min(1e-12)).detach().cpu()
+        )
         out = (x + delta).to(device=original_device, dtype=original_dtype)
         if not torch.isfinite(out).all():
             self._append_trace(
@@ -433,6 +443,9 @@ class InferenceTimeFlowController:
                 active=False,
                 delta_norm=float(delta.norm().detach().cpu()),
                 phase_strength=phase_strength,
+                target_dist=target_dist_value,
+                proj_ratio=proj_ratio_value,
+                target_basis="flow_velocity_proxy",
                 skip_reason="nonfinite_output",
             )
             self.stats.calls += 1
@@ -450,6 +463,9 @@ class InferenceTimeFlowController:
             active=True,
             delta_norm=delta_norm_value,
             phase_strength=phase_strength,
+            target_dist=target_dist_value,
+            proj_ratio=proj_ratio_value,
+            target_basis="flow_velocity_proxy",
         )
         self.stats.calls += 1
         self.stats.active_calls += 1
