@@ -122,6 +122,29 @@ def main() -> None:
     )
     parser.add_argument("--transport_target_safe_weight", type=float, default=None)
     parser.add_argument("--transport_target_retain_weight", type=float, default=None)
+    parser.add_argument(
+        "--trace_rimp_t",
+        action="store_true",
+        default=True,
+        help="Write a JSONL trace of dynamic Flow-training R_imp_norm(t) values sampled along z(t). Enabled by default.",
+    )
+    parser.add_argument(
+        "--no_trace_rimp_t",
+        dest="trace_rimp_t",
+        action="store_false",
+        help="Disable Flow-training R_imp(t) trace writing.",
+    )
+    parser.add_argument(
+        "--rimp_trace_max_records",
+        type=int,
+        default=200000,
+        help="Maximum number of Flow-training R_imp(t) trace rows to write when --trace_rimp_t is enabled.",
+    )
+    parser.add_argument(
+        "--rimp_trace_path",
+        default=None,
+        help="Optional explicit output path for the Flow-training R_imp(t) JSONL trace.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -212,6 +235,9 @@ def main() -> None:
         device=args.device,
         debug=args.debug,
         recommended_config_path=args.recommended_config_path,
+        trace_rimp_t=args.trace_rimp_t,
+        rimp_trace_max_records=args.rimp_trace_max_records,
+        rimp_trace_path=args.rimp_trace_path,
     )
     print(f"Flow teacher saved to {path}")
 

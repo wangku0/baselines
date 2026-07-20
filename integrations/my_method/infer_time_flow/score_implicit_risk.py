@@ -127,6 +127,23 @@ def main() -> None:
     parser.add_argument("--max-delta-norm-ratio", type=float, default=0.20)
     parser.add_argument("--risk-trace-max-records", type=int, default=200000)
     parser.add_argument(
+        "--decode-max-steps",
+        type=int,
+        default=None,
+        help="Optional maximum number of decode token steps that receive intervention. Omit for the original full-decode behavior.",
+    )
+    parser.add_argument(
+        "--decode-steering-mode",
+        choices=["flow", "safe_prefix"],
+        default="flow",
+        help="Decode intervention direction. Default 'flow' preserves the original FlowNav decode path.",
+    )
+    parser.add_argument(
+        "--prefix-direction-path",
+        default=None,
+        help="Path to safe_prefix_direction.pt produced by 01c_build_safe_prefix_directions.py.",
+    )
+    parser.add_argument(
         "--intervention-group-ids",
         default=None,
         help="Optional comma-separated group ids allowed to receive Flow intervention, e.g. '0'. Omit for all groups.",
@@ -178,6 +195,9 @@ def main() -> None:
         risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
         intervention_group_ids=_parse_group_ids(args.intervention_group_ids),
+        decode_max_steps=args.decode_max_steps,
+        decode_steering_mode=args.decode_steering_mode,
+        prefix_direction_path=args.prefix_direction_path,
         risk_trace_max_records=args.risk_trace_max_records,
         intervene_on_prefill=not args.no_prefill_intervention,
         intervene_on_decode=not args.no_decode_intervention,

@@ -74,12 +74,39 @@ def main() -> None:
     )
     parser.add_argument("--risk-trace-max-records", type=int, default=200000)
     parser.add_argument(
+        "--decode-max-steps",
+        type=int,
+        default=None,
+        help="Optional maximum number of decode token steps that receive intervention. Omit for the original full-decode behavior.",
+    )
+    parser.add_argument(
+        "--decode-steering-mode",
+        choices=["flow", "safe_prefix"],
+        default="flow",
+        help="Decode intervention direction. Default 'flow' preserves the original FlowNav decode path.",
+    )
+    parser.add_argument(
+        "--prefix-direction-path",
+        default=None,
+        help="Path to safe_prefix_direction.pt produced by 01c_build_safe_prefix_directions.py.",
+    )
+    parser.add_argument(
         "--intervention-group-ids",
         default=None,
         help="Optional comma-separated group ids allowed to receive Flow intervention, e.g. '0'. Omit for all groups.",
     )
     parser.add_argument("--no-prefill-intervention", action="store_true")
     parser.add_argument("--no-decode-intervention", action="store_true")
+    parser.add_argument(
+        "--abnormal-output-fallback",
+        action="store_true",
+        help="Replace abnormal/collapsed generated text with a safe refusal fallback. Default off.",
+    )
+    parser.add_argument(
+        "--abnormal-fallback-text",
+        default=None,
+        help="Fallback text used when --abnormal-output-fallback detects collapsed output.",
+    )
     parser.add_argument("--skip-inference", action="store_true")
     parser.add_argument("--skip-implicit", action="store_true")
     parser.add_argument("--skip-combine", action="store_true")
@@ -136,7 +163,13 @@ def main() -> None:
             args.numerical_fallback_ratios,
             "--risk_trace_max_records",
             str(args.risk_trace_max_records),
+            "--decode_steering_mode",
+            args.decode_steering_mode,
         ]
+        if args.prefix_direction_path:
+            command.extend(["--prefix_direction_path", args.prefix_direction_path])
+        if args.decode_max_steps is not None:
+            command.extend(["--decode_max_steps", str(args.decode_max_steps)])
         if args.intervention_group_ids:
             command.extend(["--intervention_group_ids", args.intervention_group_ids])
         if args.decode_strength is not None:
@@ -151,6 +184,10 @@ def main() -> None:
             command.append("--no_prefill_intervention")
         if args.no_decode_intervention:
             command.append("--no_decode_intervention")
+        if args.abnormal_output_fallback:
+            command.append("--abnormal_output_fallback")
+        if args.abnormal_fallback_text:
+            command.extend(["--abnormal_fallback_text", args.abnormal_fallback_text])
         run(command, REPO_ROOT, env)
 
     if not predictions.is_file():
@@ -206,7 +243,13 @@ def main() -> None:
             str(args.max_delta_norm_ratio),
             "--risk-trace-max-records",
             str(args.risk_trace_max_records),
+            "--decode-steering-mode",
+            args.decode_steering_mode,
         ]
+        if args.prefix_direction_path:
+            implicit_command.extend(["--prefix-direction-path", args.prefix_direction_path])
+        if args.decode_max_steps is not None:
+            implicit_command.extend(["--decode-max-steps", str(args.decode_max_steps)])
         if args.intervention_group_ids:
             implicit_command.extend(["--intervention-group-ids", args.intervention_group_ids])
         sd_eval_file = args.sd_eval_file or Path(args.eval_file)

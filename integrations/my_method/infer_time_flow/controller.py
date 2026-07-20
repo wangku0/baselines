@@ -33,6 +33,9 @@ class FlowInterventionStats:
     risk_gate_mode: str = "fused"
     strength: float = 0.0
     decode_strength: Optional[float] = None
+    decode_max_steps: Optional[int] = None
+    decode_steering_mode: str = "flow"
+    prefix_direction_path: Optional[str] = None
     intervention_group_ids: Optional[List[int]] = None
     trace_dropped: int = 0
     numerical_skips: int = 0
@@ -51,6 +54,9 @@ class FlowInterventionStats:
             "risk_gate_mode": self.risk_gate_mode,
             "strength": self.strength,
             "decode_strength": self.decode_strength,
+            "decode_max_steps": self.decode_max_steps,
+            "decode_steering_mode": self.decode_steering_mode,
+            "prefix_direction_path": self.prefix_direction_path,
             "intervention_group_ids": self.intervention_group_ids,
             "trace_dropped": self.trace_dropped,
             "numerical_skips": self.numerical_skips,
@@ -76,6 +82,16 @@ def _load_flow_teacher(path: Path, device: torch.device) -> dict:
     for param in model.parameters():
         param.requires_grad = False
     return {"model": model, "ckpt": ckpt}
+
+
+def _load_prefix_directions(path: Path, device: torch.device, dtype: torch.dtype) -> Dict[int, torch.Tensor]:
+    if not path.exists():
+        raise FileNotFoundError(f"Safe-prefix direction file not found: {path}")
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    raw = data.get("directions") if isinstance(data, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"Safe-prefix direction file has no non-empty 'directions' dict: {path}")
+    return {int(layer): direction.to(device=device, dtype=dtype) for layer, direction in raw.items()}
 
 
 def _find_layers_container(model: torch.nn.Module):
@@ -133,6 +149,9 @@ class InferenceTimeFlowController:
         intervention_group_ids: Optional[Iterable[int]] = None,
         intervene_on_prefill: bool = True,
         intervene_on_decode: bool = True,
+        decode_max_steps: Optional[int] = None,
+        decode_steering_mode: str = "flow",
+        prefix_direction_path: Optional[str] = None,
         risk_trace_max_records: int = 200000,
         device: Optional[torch.device] = None,
     ):
@@ -187,6 +206,25 @@ class InferenceTimeFlowController:
             if intervention_group_ids is None
             else {int(group_id) for group_id in intervention_group_ids}
         )
+        self.decode_max_steps = None if decode_max_steps is None else int(decode_max_steps)
+        if self.decode_max_steps is not None and self.decode_max_steps < 0:
+            raise ValueError("--decode-max-steps must be >= 0 when provided.")
+        self.decode_steering_mode = str(decode_steering_mode).lower()
+        if self.decode_steering_mode not in {"flow", "safe_prefix"}:
+            raise ValueError("--decode-steering-mode must be 'flow' or 'safe_prefix'.")
+        self.prefix_direction_path = None
+        self.prefix_directions: Dict[int, torch.Tensor] = {}
+        if prefix_direction_path:
+            self.prefix_direction_path = str(resolve_path(self.config, prefix_direction_path))
+            self.prefix_directions = _load_prefix_directions(
+                Path(self.prefix_direction_path),
+                self.device,
+                next(self.teacher.parameters()).dtype,
+            )
+        if self.decode_steering_mode == "safe_prefix" and not self.prefix_directions:
+            raise ValueError("--decode-steering-mode safe_prefix requires --prefix-direction-path.")
+        self._decode_step_anchor_layer = min(self.hidden_layers)
+        self._decode_step_index = 0
         self._context_explicit_risk = float(explicit_risk)
         self._context_group_id = int(group_id)
         self._batch_explicit_risks: Optional[List[float]] = None
@@ -198,6 +236,9 @@ class InferenceTimeFlowController:
         self.stats.risk_gate_mode = self.risk_gate_mode
         self.stats.strength = self.strength
         self.stats.decode_strength = self.decode_strength
+        self.stats.decode_max_steps = self.decode_max_steps
+        self.stats.decode_steering_mode = self.decode_steering_mode
+        self.stats.prefix_direction_path = self.prefix_direction_path
         self.stats.intervention_group_ids = (
             None if self.intervention_group_ids is None else sorted(self.intervention_group_ids)
         )
@@ -226,6 +267,7 @@ class InferenceTimeFlowController:
         target_dist: Optional[float] = None,
         proj_ratio: Optional[float] = None,
         target_basis: Optional[str] = None,
+        decode_step: Optional[int] = None,
         skip_reason: Optional[str] = None,
     ) -> None:
         if self.risk_trace_max_records <= 0:
@@ -252,6 +294,8 @@ class InferenceTimeFlowController:
                 "strength": float(self.strength if phase_strength is None else phase_strength),
                 "base_strength": float(self.strength),
                 "decode_strength": None if self.decode_strength is None else float(self.decode_strength),
+                "decode_max_steps": self.decode_max_steps,
+                "decode_step": None if decode_step is None else int(decode_step),
                 "intervention_group_ids": (
                     None if self.intervention_group_ids is None else sorted(self.intervention_group_ids)
                 ),
@@ -309,7 +353,7 @@ class InferenceTimeFlowController:
             cond = torch.cat([cond, risk.to(dtype=cond.dtype)], dim=-1)
         return cond, risk
 
-    def _intervene_vector(self, h: torch.Tensor, hidden_layer: int, *, phase: str) -> torch.Tensor:
+    def _intervene_vector(self, h: torch.Tensor, hidden_layer: int, *, phase: str, decode_step: Optional[int] = None) -> torch.Tensor:
         original_device = h.device
         original_dtype = h.dtype
         x = h.detach().to(device=self.device, dtype=next(self.teacher.parameters()).dtype)
@@ -329,6 +373,7 @@ class InferenceTimeFlowController:
                 active=False,
                 delta_norm=0.0,
                 phase_strength=phase_strength,
+                decode_step=decode_step,
                 skip_reason="nonfinite_condition",
             )
             self.stats.calls += 1
@@ -355,6 +400,7 @@ class InferenceTimeFlowController:
                 active=False,
                 delta_norm=0.0,
                 phase_strength=phase_strength,
+                decode_step=decode_step,
                 skip_reason="group_not_allowed",
             )
             self.stats.calls += 1
@@ -364,6 +410,27 @@ class InferenceTimeFlowController:
             return h
         threshold = self.risk_gate_threshold
         gate = torch.clamp((total_risk - threshold) / max(1.0 - threshold, 1e-6), 0.0, 1.0)
+        if phase == "decode" and self.decode_max_steps is not None and (decode_step or 0) > self.decode_max_steps:
+            self._append_trace(
+                call_index=call_index,
+                hidden_layer=hidden_layer,
+                phase=phase,
+                implicit_risk=float(risk.item()),
+                explicit_risk=float(explicit_risk.item()),
+                gate_risk=float(total_risk.item()),
+                gate=float(gate.item()),
+                active=False,
+                delta_norm=0.0,
+                phase_strength=phase_strength,
+                decode_step=decode_step,
+                skip_reason="decode_step_limit",
+            )
+            self.stats.calls += 1
+            self.stats.mean_risk_sum += float(risk.item())
+            self.stats.mean_explicit_risk_sum += float(explicit_risk.item())
+            self.stats.mean_total_risk_sum += float(total_risk.item())
+            return h
+        target_basis = "flow_velocity_proxy"
         if float(gate.item()) <= 0.0 or phase_strength == 0.0:
             self._append_trace(
                 call_index=call_index,
@@ -376,16 +443,43 @@ class InferenceTimeFlowController:
                 active=False,
                 delta_norm=0.0,
                 phase_strength=phase_strength,
+                target_basis=target_basis,
+                decode_step=decode_step,
             )
             self.stats.calls += 1
             self.stats.mean_risk_sum += float(risk.item())
             self.stats.mean_explicit_risk_sum += float(explicit_risk.item())
             self.stats.mean_total_risk_sum += float(total_risk.item())
             return h
-        t = torch.zeros(1, 1, device=self.device, dtype=x.dtype)
-        layer_id = torch.tensor([hidden_layer], device=self.device, dtype=torch.long)
-        with torch.no_grad():
-            velocity = self.teacher(x[None, :], t, cond, layer_id)[0]
+        if phase == "decode" and self.decode_steering_mode == "safe_prefix":
+            velocity = self.prefix_directions.get(int(hidden_layer))
+            target_basis = "safe_prefix_direction"
+            if velocity is None:
+                self._append_trace(
+                    call_index=call_index,
+                    hidden_layer=hidden_layer,
+                    phase=phase,
+                    implicit_risk=float(risk.item()),
+                    explicit_risk=float(explicit_risk.item()),
+                    gate_risk=float(total_risk.item()),
+                    gate=float(gate.item()),
+                    active=False,
+                    delta_norm=0.0,
+                    phase_strength=phase_strength,
+                    target_basis=target_basis,
+                    decode_step=decode_step,
+                    skip_reason="missing_prefix_direction",
+                )
+                self.stats.calls += 1
+                self.stats.mean_risk_sum += float(risk.item())
+                self.stats.mean_explicit_risk_sum += float(explicit_risk.item())
+                self.stats.mean_total_risk_sum += float(total_risk.item())
+                return h
+        else:
+            t = torch.zeros(1, 1, device=self.device, dtype=x.dtype)
+            layer_id = torch.tensor([hidden_layer], device=self.device, dtype=torch.long)
+            with torch.no_grad():
+                velocity = self.teacher(x[None, :], t, cond, layer_id)[0]
         if not torch.isfinite(velocity).all():
             self._append_trace(
                 call_index=call_index,
@@ -398,6 +492,8 @@ class InferenceTimeFlowController:
                 active=False,
                 delta_norm=0.0,
                 phase_strength=phase_strength,
+                target_basis=target_basis,
+                decode_step=decode_step,
                 skip_reason="nonfinite_velocity",
             )
             self.stats.calls += 1
@@ -416,6 +512,8 @@ class InferenceTimeFlowController:
                 active=False,
                 delta_norm=0.0,
                 phase_strength=phase_strength,
+                target_basis=target_basis,
+                decode_step=decode_step,
                 skip_reason="nonfinite_delta",
             )
             self.stats.calls += 1
@@ -445,7 +543,8 @@ class InferenceTimeFlowController:
                 phase_strength=phase_strength,
                 target_dist=target_dist_value,
                 proj_ratio=proj_ratio_value,
-                target_basis="flow_velocity_proxy",
+                target_basis=target_basis,
+                decode_step=decode_step,
                 skip_reason="nonfinite_output",
             )
             self.stats.calls += 1
@@ -465,7 +564,8 @@ class InferenceTimeFlowController:
             phase_strength=phase_strength,
             target_dist=target_dist_value,
             proj_ratio=proj_ratio_value,
-            target_basis="flow_velocity_proxy",
+            target_basis=target_basis,
+            decode_step=decode_step,
         )
         self.stats.calls += 1
         self.stats.active_calls += 1
@@ -490,11 +590,16 @@ class InferenceTimeFlowController:
             if not torch.is_tensor(raw_hidden) or not self._should_intervene(raw_hidden):
                 return output
             phase = "decode" if raw_hidden.shape[1] == 1 else "prefill"
+            decode_step = None
+            if phase == "decode":
+                if hidden_layer == self._decode_step_anchor_layer:
+                    self._decode_step_index += 1
+                decode_step = self._decode_step_index
             hidden = raw_hidden.clone()
             for batch_idx in range(raw_hidden.shape[0]):
                 source = raw_hidden[batch_idx, -1, :].clone()
                 with self._batch_item_context(batch_idx):
-                    hidden[batch_idx, -1, :] = self._intervene_vector(source, hidden_layer, phase=phase)
+                    hidden[batch_idx, -1, :] = self._intervene_vector(source, hidden_layer, phase=phase, decode_step=decode_step)
             if isinstance(output, tuple):
                 return (hidden,) + output[1:]
             return hidden
@@ -583,11 +688,14 @@ class InferenceTimeFlowController:
     def enabled(self, *, explicit_risk: Optional[float] = None, group_id: Optional[int] = None):
         self.register()
         old = self._enabled
+        old_decode_step = self._decode_step_index
         self._enabled = True
+        self._decode_step_index = 0
         try:
             with self.context(explicit_risk=explicit_risk, group_id=group_id):
                 yield self
         finally:
+            self._decode_step_index = old_decode_step
             self._enabled = old
 
     @contextmanager
@@ -599,9 +707,12 @@ class InferenceTimeFlowController:
     ):
         self.register()
         old = self._enabled
+        old_decode_step = self._decode_step_index
         self._enabled = True
+        self._decode_step_index = 0
         try:
             with self.batch_context(explicit_risks=explicit_risks, group_ids=group_ids):
                 yield self
         finally:
+            self._decode_step_index = old_decode_step
             self._enabled = old

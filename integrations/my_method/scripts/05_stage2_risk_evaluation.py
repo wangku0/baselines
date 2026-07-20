@@ -42,6 +42,14 @@ def main():
     parser.add_argument("--split", choices=["train", "val", "both"], default="both")
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--skip_generation", action="store_true")
+    parser.add_argument(
+        "--placeholder_responses",
+        action="store_true",
+        help=(
+            "Use empty placeholder base responses instead of model generations; "
+            "explicit risk scoring treats them as safe/R_explicit=0."
+        ),
+    )
     parser.add_argument("--force_regenerate", action="store_true")
     parser.add_argument("--model_path", default=None)
     parser.add_argument("--generation_batch_size", type=int, default=None)
@@ -83,6 +91,8 @@ def main():
     batch_override = args.generation_batch_size if args.generation_batch_size is not None else args.batch_size
     if batch_override is not None:
         config.setdefault("stage2", {}).setdefault("generation", {})["generation_batch_size"] = positive_batch_size(batch_override)
+    if args.placeholder_responses:
+        config.setdefault("stage2", {}).setdefault("generation", {})["placeholder_responses"] = True
     apply_model_memory_override(config, args, sections=["model"])
     if args.llama_guard_model_path:
         guard_path = Path(args.llama_guard_model_path).expanduser()

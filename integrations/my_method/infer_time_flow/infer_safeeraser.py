@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,36 @@ SAFEERASER_TARGET_MODULES = (
     r"(up_proj|k_proj|linear_2|down_proj|v_proj|q_proj|o_proj|gate_proj|linear_1)"
 )
 SAFE_EMPTY_RESPONSE = "I cannot provide a response."
+SAFE_ABNORMAL_FALLBACK_RESPONSE = "I'm sorry, but I can't provide instructions for carrying out this activity."
+
+
+def _abnormal_output_reasons(text: str) -> list[str]:
+    value = str(text or "").strip()
+    if not value:
+        return ["empty"]
+    reasons: list[str] = []
+    if len(value) < 20:
+        reasons.append("too_short")
+
+    tokens = re.findall(r"[A-Za-z0-9]+", value)
+    token_count = max(len(tokens), 1)
+    for token in set(tokens):
+        count = tokens.count(token)
+        if count >= 10 and count / token_count > 0.25:
+            reasons.append(f"token_repeat:{token}:{count}/{token_count}")
+            break
+
+    if re.search(r"\b(\d+)[\.)]?(?:\s*\1[\.)]?){9,}", value):
+        reasons.append("same_number_repeat")
+    elif re.search(r"(?:\b\d+[\.)]?\s*){20,}", value):
+        reasons.append("number_sequence_repeat")
+    if re.search(r"(.{3,20})\1{4,}", value):
+        reasons.append("substring_repeat")
+
+    weird = sum(1 for ch in value if ord(ch) > 127 and not ("\u4e00" <= ch <= "\u9fff"))
+    if weird >= 8:
+        reasons.append(f"weird_unicode:{weird}")
+    return reasons
 
 
 def _parse_group_ids(value: str | None) -> list[int] | None:
@@ -159,6 +190,26 @@ def main() -> None:
     )
     parser.add_argument("--risk_trace_max_records", type=int, default=200000)
     parser.add_argument(
+        "--decode_max_steps",
+        "--decode-max-steps",
+        type=int,
+        default=None,
+        help="Optional maximum number of decode token steps that receive intervention. Omit for the original full-decode behavior.",
+    )
+    parser.add_argument(
+        "--decode_steering_mode",
+        "--decode-steering-mode",
+        choices=["flow", "safe_prefix"],
+        default="flow",
+        help="Decode intervention direction. Default 'flow' preserves the original FlowNav decode path.",
+    )
+    parser.add_argument(
+        "--prefix_direction_path",
+        "--prefix-direction-path",
+        default=None,
+        help="Path to safe_prefix_direction.pt produced by 01c_build_safe_prefix_directions.py.",
+    )
+    parser.add_argument(
         "--intervention_group_ids",
         "--intervention-group-ids",
         default=None,
@@ -166,6 +217,18 @@ def main() -> None:
     )
     parser.add_argument("--no_prefill_intervention", action="store_true")
     parser.add_argument("--no_decode_intervention", action="store_true")
+    parser.add_argument(
+        "--abnormal_output_fallback",
+        "--abnormal-output-fallback",
+        action="store_true",
+        help="Replace abnormal/collapsed generated text with a safe refusal fallback. Default off.",
+    )
+    parser.add_argument(
+        "--abnormal_fallback_text",
+        "--abnormal-fallback-text",
+        default=SAFE_ABNORMAL_FALLBACK_RESPONSE,
+        help="Fallback text used when --abnormal_output_fallback detects collapsed output.",
+    )
     args = parser.parse_args()
     if args.batch_size is not None:
         args.generation_batch_size = int(args.batch_size)
@@ -207,6 +270,9 @@ def main() -> None:
         risk_gate_mode=args.risk_gate_mode,
         max_delta_norm_ratio=args.max_delta_norm_ratio,
         intervention_group_ids=_parse_group_ids(args.intervention_group_ids),
+        decode_max_steps=args.decode_max_steps,
+        decode_steering_mode=args.decode_steering_mode,
+        prefix_direction_path=args.prefix_direction_path,
         risk_trace_max_records=args.risk_trace_max_records,
         intervene_on_prefill=not args.no_prefill_intervention,
         intervene_on_decode=not args.no_decode_intervention,
@@ -222,6 +288,26 @@ def main() -> None:
 
     rows = json.loads(Path(args.eval_file).read_text(encoding="utf-8"))
     results = []
+    abnormal_fallback_records: list[dict[str, Any]] = []
+
+    def apply_abnormal_fallback(text: str, output_path: tuple[Any, ...]) -> str:
+        if not args.abnormal_output_fallback:
+            return text
+        reasons = _abnormal_output_reasons(text)
+        if not reasons:
+            return text
+        abnormal_fallback_records.append(
+            {
+                "output_path": list(output_path),
+                "reasons": reasons,
+                "original_preview": str(text or "")[:240],
+                "replacement": args.abnormal_fallback_text,
+            }
+        )
+        return args.abnormal_fallback_text
+
+    def assign_prediction(root: dict, output_path: tuple[Any, ...], text: str) -> None:
+        _set_nested_value(root, output_path, apply_abnormal_fallback(text, output_path))
 
     def generate_responses(
         prompt_text: str,
@@ -345,7 +431,7 @@ def main() -> None:
             raise RuntimeError("Cross-sample generation produced no output.")
         prompt_len = inputs["input_ids"].shape[1]
         for row_idx, task in enumerate(tasks):
-            _set_nested_value(task["root"], task["output_path"], _decode(processor, output[row_idx : row_idx + 1], prompt_len))
+            assign_prediction(task["root"], task["output_path"], _decode(processor, output[row_idx : row_idx + 1], prompt_len))
 
     def run_cross_sample_generation(output_rows: list[dict]) -> None:
         tasks: list[dict] = []
@@ -460,7 +546,7 @@ def main() -> None:
                     group_id=0,
                 )
                 if preds:
-                    pair["sd_response"] = preds[0]
+                    pair["sd_response"] = apply_abnormal_fallback(preds[0], ("unsafe_pairs", "sd_response"))
 
         if id_image is not None:
             for key in ("UnharmPair_text1", "UnharmPair_text2", "UnharmPair_image1", "UnharmPair_image2"):
@@ -475,7 +561,7 @@ def main() -> None:
                         group_id=2,
                     )
                     if preds:
-                        item["Prediction"] = preds[0]
+                        item["Prediction"] = apply_abnormal_fallback(preds[0], (key, "Prediction"))
 
             for pair in unsafe_pairs:
                 pair.pop("model_response", None)
@@ -489,7 +575,7 @@ def main() -> None:
                     group_id=0,
                 )
                 for idx, pred in enumerate(preds[:3], start=1):
-                    pair[f"model_response{idx}"] = pred
+                    pair[f"model_response{idx}"] = apply_abnormal_fallback(pred, ("unsafe_pairs", f"model_response{idx}"))
 
             if isinstance(safe_nb_pairs, list):
                 for pair in safe_nb_pairs:
@@ -507,7 +593,7 @@ def main() -> None:
                             group_id=1,
                         )
                         if preds:
-                            pair["model_response1"] = preds[0]
+                            pair["model_response1"] = apply_abnormal_fallback(preds[0], ("safeNb_pairs", "model_response1"))
 
         output_line["unsafe_pairs"] = unsafe_pairs
         if safe_nb_pairs:
@@ -524,6 +610,22 @@ def main() -> None:
     stats_path.write_text(json.dumps(controller.stats.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     trace_path = out.with_suffix(".flow_risk_trace.jsonl")
     controller.write_risk_trace(trace_path)
+    if args.abnormal_output_fallback:
+        fallback_path = out.with_suffix(".abnormal_fallback.json")
+        fallback_path.write_text(
+            json.dumps(
+                {
+                    "enabled": True,
+                    "replacement": args.abnormal_fallback_text,
+                    "num_replaced": len(abnormal_fallback_records),
+                    "records": abnormal_fallback_records,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"Abnormal output fallback records saved to {fallback_path}")
     print(f"Results saved to {out}")
     print(f"Flow intervention stats saved to {stats_path}")
     print(f"Flow risk trace saved to {trace_path}")

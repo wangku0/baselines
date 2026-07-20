@@ -1,0 +1,59 @@
+# Violence single-category inference-time Flow run.
+# Keeps the same hyperparameters as safeeraser_llava.yaml, but isolates all
+# artifacts under outputs_violence and uses the full Violence train/val paired splits.
+base_config: safeeraser_llava.yaml
+
+dataset:
+  train_file: "dataset/paired/all_train_violence.json"
+  val_file: "dataset/paired/all_val_violence.json"
+
+model:
+  offload_folder: "integrations/my_method/outputs_violence/offload"
+
+stage2:
+  outputs:
+    generations_dir: "integrations/my_method/outputs_violence/generations"
+    metrics_dir: "integrations/my_method/outputs_violence/metrics/stage2"
+    figures_dir: "integrations/my_method/outputs_violence/figures/stage2"
+
+flow_matching:
+  output_dir: "integrations/my_method/outputs_violence/stage2_5_flow"
+  recommended_config:
+    path: "integrations/my_method/outputs_violence/metrics/stage1_5/recommended_layers.json"
+
+stage3:
+  base_model:
+    offload_folder: "integrations/my_method/outputs_violence/offload"
+  risk_space:
+    risk_basis_path: "integrations/my_method/outputs_violence/risk_space/risk_basis.pt"
+  layer_selection:
+    top_n_ablation_path: "integrations/my_method/outputs_violence/metrics/stage3/risk_transport_topn_ablation.json"
+    module_selection_path: "integrations/my_method/outputs_violence/metrics/stage3/module_risk_transport_selection.json"
+  data:
+    train_stage2_scores: "integrations/my_method/outputs_violence/metrics/stage2/train_stage2_risk_scores.csv"
+    train_weights: "integrations/my_method/outputs_violence/metrics/stage2/train_training_weights.csv"
+    val_stage2_scores: "integrations/my_method/outputs_violence/metrics/stage2/val_stage2_risk_scores.csv"
+  training:
+    output_dir: "integrations/my_method/outputs_violence/stage3/lora_unlearned"
+  flow_distillation:
+    teacher_path: "integrations/my_method/outputs_violence/stage2_5_flow/flow_teacher.pt"
+  evaluation:
+    base_generations_path_template: "integrations/my_method/outputs_violence/generations/stage3/{dataset}_{split}_base_generations.jsonl"
+  outputs:
+    output_dir: "integrations/my_method/outputs_violence/stage3"
+    adapter_dir: "integrations/my_method/outputs_violence/stage3/lora_unlearned/adapter"
+    metrics_dir: "integrations/my_method/outputs_violence/metrics/stage3"
+    figures_dir: "integrations/my_method/outputs_violence/figures/stage3"
+    generations_dir: "integrations/my_method/outputs_violence/generations/stage3"
+
+utility_eval:
+  output_dir: "integrations/my_method/outputs_violence/utility_eval/vlmevalkit"
+  methods:
+    ours:
+      adapter_path: "integrations/my_method/outputs_violence/stage3/lora_unlearned/adapter"
+
+outputs:
+  hidden_states_dir: "integrations/my_method/outputs_violence/hidden_states"
+  risk_space_dir: "integrations/my_method/outputs_violence/risk_space"
+  metrics_dir: "integrations/my_method/outputs_violence/metrics"
+  figures_dir: "integrations/my_method/outputs_violence/figures"

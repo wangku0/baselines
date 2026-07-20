@@ -266,6 +266,15 @@ def _get_llama_guard_scorer(config: Dict[str, Any]):
 def score_explicit_risks(records: List[Dict[str, Any]], config: Dict[str, Any]) -> List[Dict[str, Any]]:
     method = _explicit_method(config)
     if method in {"llama_guard2_asr", "llamaguard2_asr", "llama_guard"}:
+        all_empty_or_failed = all(
+            record.get("generation_error") or not str(record.get("generated_response") or "").strip()
+            for record in records
+        )
+        if all_empty_or_failed:
+            return [
+                _empty_or_failed_generation_score(record, method="llama_guard2_asr_gguf_safeeraser_prompt")
+                for record in records
+            ]
         return _get_llama_guard_scorer(config).score_records(records)
     if method == "rule_based":
         return [_score_explicit_risk_rule_based(record, config) for record in records]

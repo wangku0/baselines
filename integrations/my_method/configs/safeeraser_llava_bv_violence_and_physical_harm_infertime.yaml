@@ -1,0 +1,62 @@
+# BeaverTails-V violence_and_physical_harm inference-time Flow run.
+# Converts BV boundary/parquet data into SafeNav-compatible paired JSON files
+# under /root/BV-SafeNav-run and isolates all artifacts there.
+base_config: safeeraser_llava.yaml
+
+project_root: "/root/autodl-tmp/baselines"
+
+dataset:
+  image_root: "/"
+  train_file: "/root/BV-SafeNav-run/data/paired/bv_violence_and_physical_harm_train.json"
+  val_file: "/root/BV-SafeNav-run/data/paired/bv_violence_and_physical_harm_val.json"
+
+model:
+  offload_folder: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/offload"
+
+stage2:
+  outputs:
+    generations_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/generations"
+    metrics_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage2"
+    figures_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/figures/stage2"
+
+flow_matching:
+  output_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/stage2_5_flow"
+  recommended_config:
+    path: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage1_5/recommended_layers.json"
+
+stage3:
+  base_model:
+    offload_folder: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/offload"
+  risk_space:
+    risk_basis_path: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/risk_space/risk_basis.pt"
+  layer_selection:
+    top_n_ablation_path: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage3/risk_transport_topn_ablation.json"
+    module_selection_path: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage3/module_risk_transport_selection.json"
+  data:
+    train_stage2_scores: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage2/train_stage2_risk_scores.csv"
+    train_weights: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage2/train_training_weights.csv"
+    val_stage2_scores: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage2/val_stage2_risk_scores.csv"
+  training:
+    output_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/stage3/lora_unlearned"
+  flow_distillation:
+    teacher_path: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/stage2_5_flow/flow_teacher.pt"
+  evaluation:
+    base_generations_path_template: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/generations/stage3/{dataset}_{split}_base_generations.jsonl"
+  outputs:
+    output_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/stage3"
+    adapter_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/stage3/lora_unlearned/adapter"
+    metrics_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics/stage3"
+    figures_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/figures/stage3"
+    generations_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/generations/stage3"
+
+utility_eval:
+  output_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/utility_eval/vlmevalkit"
+  methods:
+    ours:
+      adapter_path: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/stage3/lora_unlearned/adapter"
+
+outputs:
+  hidden_states_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/hidden_states"
+  risk_space_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/risk_space"
+  metrics_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/metrics"
+  figures_dir: "/root/BV-SafeNav-run/outputs_violence_and_physical_harm/figures"

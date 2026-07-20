@@ -1,0 +1,5 @@
+base_config: safeeraser_llava_sex_infertime.yaml
+
+dataset:
+  train_file: dataset/paired/all_train_sex.json
+  val_file: dataset/paired/all_val_sex.json

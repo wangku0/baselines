@@ -60,6 +60,69 @@ def _existing_matches_source(path: Path, response_source: str, expected_count: i
     return all(record.get("response_source") == response_source for record in existing[:expected_count])
 
 
+def _existing_matches_any_source(path: Path, response_sources: set[str], expected_count: int) -> bool:
+    if not path.exists():
+        return False
+    existing = read_jsonl(path)
+    if len(existing) < expected_count:
+        return False
+    return all(record.get("response_source") in response_sources for record in existing[:expected_count])
+
+
+def write_placeholder_responses_for_split(
+    config: Dict[str, Any],
+    split: str,
+    *,
+    max_samples: Optional[int] = None,
+    force_regenerate: bool = False,
+    model_path_override: Optional[str] = None,
+) -> Path:
+    """Create generation-format JSONL without running the base model.
+
+    Stage 2 explicit-risk scoring treats empty/failed generations as safe
+    (R_explicit=0), so this is useful when only the implicit risk side is
+    needed and base response text would only add expensive bookkeeping.
+    """
+    out_path = generation_path(config, split)
+    samples = load_dataset(config, split=split, max_samples=max_samples)
+    expected_count = len(samples)
+    reuse = (
+        bool(config.get("stage2", {}).get("generation", {}).get("reuse_existing_generations", True))
+        and not force_regenerate
+    )
+    if reuse and _existing_matches_source(out_path, "placeholder", expected_count):
+        logger.info("Reusing placeholder response file for split=%s from %s", split, out_path)
+        return out_path
+
+    model_path = (
+        model_path_override
+        or config.get("stage2", {}).get("generation", {}).get("model_path")
+        or config["model"]["local_path"]
+    )
+    records = []
+    for sample in samples:
+        records.append(
+            {
+                "sample_id": sample["id"],
+                "split": split,
+                "sample_type": sample["sample_type"],
+                "pair_id": sample.get("pair_id"),
+                "category": sample.get("category"),
+                "keyword": sample.get("keyword"),
+                "image_path": sample.get("image_path"),
+                "instruction": sample.get("instruction"),
+                "reference_response": sample.get("response"),
+                "generated_response": "",
+                "generation_error": "base_response_generation_skipped",
+                "model_path": model_path,
+                "response_source": "placeholder",
+            }
+        )
+    write_jsonl(records, out_path)
+    logger.info("Saved %d placeholder response records to %s", len(records), out_path)
+    return out_path
+
+
 def load_dataset_responses_for_split(
     config: Dict[str, Any],
     split: str,
@@ -287,22 +350,41 @@ def ensure_generation_files(
         raise ValueError(f"stage2.response_source must be 'dataset' or 'generate', got {response_source}")
     for split in splits:
         path = generation_path(config, split)
+        placeholder_enabled = bool(config.get("stage2", {}).get("generation", {}).get("placeholder_responses", False))
         if skip_generation:
+            if not path.exists() and placeholder_enabled:
+                paths[split] = write_placeholder_responses_for_split(
+                    config,
+                    split,
+                    max_samples=max_samples,
+                    force_regenerate=force_regenerate,
+                    model_path_override=model_path_override,
+                )
+                continue
             if not path.exists():
                 raise FileNotFoundError(f"Missing generations file for split={split}: {path}")
             expected_count = max_samples
             if expected_count is None:
                 expected_count = len(load_dataset(config, split=split))
             stored_source = "generated" if response_source == "generate" else "dataset"
-            if not _existing_matches_source(path, stored_source, expected_count):
+            accepted_sources = {stored_source, "placeholder"}
+            if not _existing_matches_any_source(path, accepted_sources, expected_count):
                 raise ValueError(
                     f"Existing generations file for split={split} does not match "
-                    f"response_source={response_source!r} (stored as {stored_source!r}) "
+                    f"response_source={response_source!r} (stored as {stored_source!r}; placeholder is also accepted) "
                     f"or has fewer than "
                     f"{expected_count} records: {path}. Rerun without "
                     "--skip_generation to rebuild it from the configured source."
                 )
             paths[split] = path
+        elif placeholder_enabled:
+            paths[split] = write_placeholder_responses_for_split(
+                config,
+                split,
+                max_samples=max_samples,
+                force_regenerate=force_regenerate,
+                model_path_override=model_path_override,
+            )
         elif response_source == "dataset":
             paths[split] = load_dataset_responses_for_split(
                 config,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -58,6 +59,9 @@ def train_flow_teacher(
     device: Optional[str] = None,
     debug: bool = False,
     recommended_config_path: Optional[str] = None,
+    trace_rimp_t: bool = True,
+    rimp_trace_max_records: int = 200000,
+    rimp_trace_path: Optional[str] = None,
 ) -> Path:
     flow_cfg = config.get("flow_matching", {})
     out_dir = ensure_dir(resolve_path(config, flow_cfg.get("output_dir", "integrations/my_method/outputs/stage2_5_flow")))
@@ -88,6 +92,53 @@ def train_flow_teacher(
     ode_steps = int(teacher_cfg.get("ode_steps", 8))
     grad_clip = float(teacher_cfg.get("grad_clip", 1.0))
     log_path = out_dir / "train_log.csv"
+    rimp_trace_file = Path(rimp_trace_path) if rimp_trace_path else out_dir / f"flow_train_{split}_rimp_t_trace.jsonl"
+    rimp_trace_records = 0
+
+    def write_rimp_trace(step: int, indices: list[int], t: torch.Tensor, cond_t: torch.Tensor) -> None:
+        nonlocal rimp_trace_records
+        if not trace_rimp_t or rimp_trace_records >= int(rimp_trace_max_records):
+            return
+        rimp_values = cond_t[:, -1].detach().float().cpu().flatten().tolist()
+        t_values = t.detach().float().cpu().flatten().tolist()
+        remaining = int(rimp_trace_max_records) - rimp_trace_records
+        with rimp_trace_file.open("a", encoding="utf-8") as trace_f:
+            for batch_index, example_index in enumerate(indices[:remaining]):
+                ex = examples[int(example_index)]
+                trace_f.write(
+                    json.dumps(
+                        {
+                            "phase": "flow_train",
+                            "split": split,
+                            "step": int(step),
+                            "batch_index": int(batch_index),
+                            "example_index": int(example_index),
+                            "kind": ex.get("kind"),
+                            "layer": int(ex.get("layer")),
+                            "t": float(t_values[batch_index]),
+                            "R_imp_norm_t": float(rimp_values[batch_index]),
+                            "sample_id": ex.get("sample_id"),
+                            "pair_id": ex.get("pair_id"),
+                            "target_sample_id": ex.get("target_sample_id"),
+                            "safe_sample_id": ex.get("safe_sample_id"),
+                            "retain_sample_id": ex.get("retain_sample_id"),
+                            "target_mode": ex.get("target_mode"),
+                            "target_safe_weight": ex.get("target_safe_weight"),
+                            "target_retain_weight": ex.get("target_retain_weight"),
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                rimp_trace_records += 1
+                if rimp_trace_records >= int(rimp_trace_max_records):
+                    break
+
+    if trace_rimp_t:
+        rimp_trace_file.parent.mkdir(parents=True, exist_ok=True)
+        rimp_trace_file.write_text("", encoding="utf-8")
+        logger.info("Flow training R_imp(t) trace enabled: %s", rimp_trace_file)
+
     fields = ["step", "loss", "loss_velocity", "loss_endpoint", "loss_identity", "endpoint_noop", "delta_cos"]
     with log_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -110,6 +161,7 @@ def train_flow_teacher(
                 upper,
                 norm_clip,
             )
+            write_rimp_trace(step, idx, t, cond_t)
             pred_v = model(xt, t, cond_t, layer)
             identity_mask = torch.tensor([k == "identity" for k in kind], device=device_t)
             pair_mask = ~identity_mask
@@ -173,7 +225,15 @@ def train_flow_teacher(
             if step % int(teacher_cfg.get("save_every", 1000)) == 0:
                 _save(model, out_dir, data, rec, teacher_cfg)
     _save(model, out_dir, data, rec, teacher_cfg)
-    save_json({"recommended": rec, "train_log": str(log_path)}, out_dir / "eval_summary.json")
+    save_json(
+        {
+            "recommended": rec,
+            "train_log": str(log_path),
+            "rimp_t_trace": str(rimp_trace_file) if trace_rimp_t else None,
+            "rimp_t_trace_records": int(rimp_trace_records),
+        },
+        out_dir / "eval_summary.json",
+    )
     with (out_dir / "flow_config_resolved.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(
             {
@@ -186,6 +246,8 @@ def train_flow_teacher(
                 "flow_target": data.get("flow_target"),
                 "representation_pooling": data.get("representation_pooling"),
                 "requested_representation_pooling": data.get("requested_representation_pooling"),
+                "rimp_t_trace": str(rimp_trace_file) if trace_rimp_t else None,
+                "rimp_t_trace_records": int(rimp_trace_records),
             },
             f,
             allow_unicode=True,
