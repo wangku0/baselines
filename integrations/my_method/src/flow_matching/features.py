@@ -29,11 +29,15 @@ def _load_risk_basis(path: Path) -> tuple[Dict[int, torch.Tensor], Dict[int, tor
     )
 
 
-def _load_hidden_cache(config: Dict[str, Any], split: str) -> Dict[str, Any]:
-    path = resolve_path(config, config["outputs"]["hidden_states_dir"]) / f"{split}_hidden_states.pt"
+def _load_hidden_cache(config: Dict[str, Any], split: str, hidden_states_dir: Optional[str] = None) -> Dict[str, Any]:
+    root = hidden_states_dir or config["outputs"]["hidden_states_dir"]
+    path = resolve_path(config, root) / f"{split}_hidden_states.pt"
     if not path.exists():
         raise FileNotFoundError(f"Missing hidden cache: {path}. Run Stage 1 extraction first.")
-    return torch.load(path, map_location="cpu", weights_only=False)
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    data["_cache_path"] = str(path)
+    data["_cache_dir"] = str(path.parent)
+    return data
 
 
 def _load_safe_prefix_hidden_cache(config: Dict[str, Any], split: str) -> Dict[str, Any]:
@@ -161,10 +165,16 @@ def build_flow_features(
             f"({actual_pooling}), but config requested {requested_pooling!r}. "
             "Set flow_matching.representation.pooling to 'stage1_last_input_token_cache' or implement response-span extraction."
         )
+    source_hidden_states_dir = representation_cfg.get("source_hidden_states_dir") or representation_cfg.get("hidden_states_dir")
+    target_hidden_states_dir = representation_cfg.get("target_hidden_states_dir")
     target_cfg = _flow_target_config(config)
-    hidden = _load_hidden_cache(config, split)
+    hidden = _load_hidden_cache(config, split, source_hidden_states_dir)
+    target_hidden = _load_hidden_cache(config, split, target_hidden_states_dir) if target_hidden_states_dir else hidden
     metadata: List[Dict[str, Any]] = hidden["metadata"]
     hidden_by_layer = {int(k): v.float() for k, v in hidden["hidden_states"].items()}
+    target_metadata: List[Dict[str, Any]] = target_hidden["metadata"]
+    target_hidden_by_layer = {int(k): v.float() for k, v in target_hidden["hidden_states"].items()}
+    target_idx_by_id = {m["id"]: i for i, m in enumerate(target_metadata)}
     safe_prefix_metadata: List[Dict[str, Any]] = []
     safe_prefix_by_layer: Dict[int, torch.Tensor] = {}
     safe_prefix_by_pair: Dict[str, int] = {}
@@ -237,13 +247,29 @@ def build_flow_features(
         hi = idx_by_id[hid]
         si = idx_by_id[sid]
         ri = idx_by_id[rid] if rid is not None else None
+        target_si = target_idx_by_id.get(sid)
+        target_ri = target_idx_by_id.get(rid) if rid is not None else None
+        if target_si is None:
+            raise KeyError(
+                f"Target hidden cache is missing safe_neighbor sample_id={sid!r}. "
+                "The source and target hidden caches must be built from the same paired dataset."
+            )
+        if rid is not None and target_ri is None:
+            raise KeyError(
+                f"Target hidden cache is missing retain sample_id={rid!r}. "
+                "The source and target hidden caches must be built from the same paired dataset."
+            )
         prefix_i = safe_prefix_by_pair.get(pid)
         if target_cfg["mode"] == "safe_answer_prefix" and prefix_i is None:
             logger.warning("Skipping pair %s because safe answer prefix hidden is missing.", pid)
             continue
         for layer in rec.recommended_hidden_layers:
+            if layer not in hidden_by_layer:
+                raise KeyError(f"Layer {layer} is missing from source hidden cache {hidden.get('_cache_path')}.")
+            if layer not in target_hidden_by_layer:
+                raise KeyError(f"Layer {layer} is missing from target hidden cache {target_hidden.get('_cache_path')}.")
             xh = hidden_by_layer[layer][hi].float()
-            xs = hidden_by_layer[layer][si].float()
+            xs = target_hidden_by_layer[layer][target_si].float()
             if target_cfg["mode"] == "safe_answer_prefix":
                 if layer not in safe_prefix_by_layer:
                     raise KeyError(
@@ -256,7 +282,7 @@ def build_flow_features(
             else:
                 if ri is None:
                     raise ValueError(f"Flow target {target_cfg['mode']} requires retain samples.")
-                xr = hidden_by_layer[layer][ri].float()
+                xr = target_hidden_by_layer[layer][target_ri].float()
                 x_target = target_cfg["safe_weight"] * xs + target_cfg["retain_weight"] * xr
                 target_sample_id = sid if target_cfg["mode"] == "safe_neighbor" else rid if target_cfg["mode"] == "retain" else f"{sid}+{rid}"
             delta_to_target = xh - x_target
@@ -338,6 +364,8 @@ def build_flow_features(
             },
             "recommended": rec.to_dict(),
             "flow_target": target_cfg,
+            "source_hidden_cache_path": hidden.get("_cache_path"),
+            "target_hidden_cache_path": target_hidden.get("_cache_path"),
             "representation_pooling": actual_pooling,
             "requested_representation_pooling": requested_pooling,
         },
@@ -363,6 +391,8 @@ def build_flow_features(
         "flow_target_safe_weight": target_cfg["safe_weight"],
         "flow_target_retain_weight": target_cfg["retain_weight"],
         "flow_target_safe_answer_prefix_tokens": target_cfg.get("safe_answer_prefix_tokens"),
+        "source_hidden_cache_path": hidden.get("_cache_path"),
+        "target_hidden_cache_path": target_hidden.get("_cache_path"),
         "representation_pooling": actual_pooling,
         "requested_representation_pooling": requested_pooling,
         "source_path": rec.source_path,

@@ -20,6 +20,20 @@ def main() -> None:
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--model_path", default=None, help="Override config model.local_path")
     parser.add_argument(
+        "--hidden-states-dir",
+        "--hidden_states_dir",
+        default=None,
+        help="Override outputs.hidden_states_dir for this extraction run.",
+    )
+    parser.add_argument(
+        "--safeeraser-checkpoint",
+        "--safeeraser_checkpoint",
+        default=None,
+        help="Optional SafeEraser checkpoint.pt merged before hidden-state extraction.",
+    )
+    parser.add_argument("--safeeraser-lora-r", type=int, default=32)
+    parser.add_argument("--safeeraser-lora-alpha", type=int, default=256)
+    parser.add_argument(
         "--all_layers",
         action="store_true",
         help="Extract all transformer hidden layers, excluding hidden_states[0] embedding output.",
@@ -35,6 +49,8 @@ def main() -> None:
 
     config = load_config(args.config)
     apply_dataset_preset(config, args.dataset)
+    if args.hidden_states_dir:
+        config.setdefault("outputs", {})["hidden_states_dir"] = args.hidden_states_dir
     if args.all_layers:
         config.setdefault("hidden_states", {})["all_layers"] = True
     if args.batch_size is not None:
@@ -53,6 +69,9 @@ def main() -> None:
         split=args.split,
         max_samples=args.max_samples,
         model_path_override=args.model_path,
+        safeeraser_checkpoint_path=args.safeeraser_checkpoint,
+        safeeraser_lora_r=args.safeeraser_lora_r,
+        safeeraser_lora_alpha=args.safeeraser_lora_alpha,
     )
 
 

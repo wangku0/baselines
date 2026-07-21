@@ -33,6 +33,44 @@ def _chunks(items: List[Dict[str, Any]], batch_size: int) -> List[List[Dict[str,
     return [items[start : start + batch_size] for start in range(0, len(items), batch_size)]
 
 
+def _load_safeeraser_checkpoint(model: Any, checkpoint_path: str, r: int = 32, alpha: int = 256) -> Any:
+    from peft import LoraConfig, get_peft_model
+
+    target_modules = (
+        r".*language_model.*\."
+        r"(up_proj|k_proj|linear_2|down_proj|v_proj|q_proj|o_proj|gate_proj|linear_1)"
+    )
+    peft_config = LoraConfig(
+        r=r,
+        lora_alpha=alpha,
+        target_modules=target_modules,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, peft_config)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict):
+        raise TypeError(f"Expected SafeEraser checkpoint state dict, got {type(checkpoint).__name__}: {checkpoint_path}")
+    model_keys = set(model.state_dict())
+    matched_keys = model_keys.intersection(checkpoint)
+    matched_lora_keys = [key for key in matched_keys if "lora_" in key]
+    if not matched_lora_keys:
+        raise RuntimeError(
+            "The SafeEraser checkpoint did not match any LoRA parameters. "
+            f"Sample checkpoint keys: {list(checkpoint)[:5]}"
+        )
+    incompatible = model.load_state_dict(checkpoint, strict=False)
+    logger.info(
+        "Loaded SafeEraser checkpoint for hidden extraction: %s matched=%d lora=%d unexpected=%d",
+        checkpoint_path,
+        len(matched_keys),
+        len(matched_lora_keys),
+        len(incompatible.unexpected_keys),
+    )
+    return model.merge_and_unload()
+
+
 def _select_layers_once(config: Dict[str, Any], hidden_states: Any, requested_layers: List[int]) -> List[int]:
     hidden_cfg = config.get("hidden_states", {})
     total_layers = len(hidden_states)
@@ -58,6 +96,9 @@ def extract_hidden_states_for_split(
     split: str,
     max_samples: Optional[int] = None,
     model_path_override: Optional[str] = None,
+    safeeraser_checkpoint_path: Optional[str] = None,
+    safeeraser_lora_r: int = 32,
+    safeeraser_lora_alpha: int = 256,
 ) -> Path:
     ensure_output_dirs(config)
     if max_samples is None:
@@ -73,6 +114,13 @@ def extract_hidden_states_for_split(
     logger.info("Extracting hidden states for split=%s, sample counts=%s", split, dict(counts))
 
     model, processor = load_model_and_processor(config, model_path_override=model_path_override)
+    if safeeraser_checkpoint_path:
+        model = _load_safeeraser_checkpoint(
+            model,
+            safeeraser_checkpoint_path,
+            r=int(safeeraser_lora_r),
+            alpha=int(safeeraser_lora_alpha),
+        )
     input_device = infer_input_device(model)
     hidden_cfg = config.get("hidden_states", {})
     max_pixels = hidden_cfg.get("max_pixels")
@@ -207,6 +255,7 @@ def extract_hidden_states_for_split(
         "hidden_states": stacked,
         "target_layers": selected_layers,
         "model_path": model_path_override or config.get("model", {}).get("local_path"),
+        "safeeraser_checkpoint_path": safeeraser_checkpoint_path,
         "token_position": config.get("hidden_states", {}).get("token_position", "last_input_token"),
         "all_layers": bool(config.get("hidden_states", {}).get("all_layers", False)),
         "batch_size": batch_size,

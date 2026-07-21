@@ -73,6 +73,24 @@ def main() -> None:
         help="Override flow_matching.output_dir so target ablations can be saved in separate folders.",
     )
     parser.add_argument(
+        "--flow-source-hidden-states-dir",
+        "--flow_source_hidden_states_dir",
+        default=None,
+        help=(
+            "Optional source hidden cache directory for Flow x0. "
+            "Use this for PO/forget hidden states while keeping the target cache on base boundary states."
+        ),
+    )
+    parser.add_argument(
+        "--flow-target-hidden-states-dir",
+        "--flow_target_hidden_states_dir",
+        default=None,
+        help=(
+            "Optional target hidden cache directory for Flow x1 safeNb/retain endpoints. "
+            "If omitted, the source/default Stage 1 hidden cache is used."
+        ),
+    )
+    parser.add_argument(
         "--flow_target",
         choices=["safe_neighbor", "safenb", "safe", "retain", "mixed", "mix", "safe_answer_prefix", "safe_prefix", "answer_prefix"],
         default=None,
@@ -151,6 +169,10 @@ def main() -> None:
     apply_dataset_preset(config, args.dataset)
     if args.flow_output_dir:
         config.setdefault("flow_matching", {})["output_dir"] = args.flow_output_dir
+    if args.flow_source_hidden_states_dir:
+        config.setdefault("flow_matching", {}).setdefault("representation", {})["source_hidden_states_dir"] = args.flow_source_hidden_states_dir
+    if args.flow_target_hidden_states_dir:
+        config.setdefault("flow_matching", {}).setdefault("representation", {})["target_hidden_states_dir"] = args.flow_target_hidden_states_dir
     if args.flow_target:
         config.setdefault("flow_matching", {}).setdefault("target", {})["mode"] = args.flow_target
     if args.safe_prefix_hidden_states_dir:
@@ -207,6 +229,18 @@ def main() -> None:
                 print(f"  - existing: {existing_target}")
                 print(f"  - requested: {target_cfg}")
                 force_for_target_mismatch = True
+            existing_repr = (existing.get("flow_matching") or {}).get("representation") or {}
+            requested_repr = config.get("flow_matching", {}).get("representation", {})
+            for key in ("source_hidden_states_dir", "target_hidden_states_dir"):
+                if args.flow_source_hidden_states_dir or args.flow_target_hidden_states_dir:
+                    if str(existing_repr.get(key)) != str(requested_repr.get(key)):
+                        print(
+                            "[reuse_existing] Stage 2.5 Flow teacher: existing hidden-cache representation "
+                            f"{key} differs from requested; recomputing."
+                        )
+                        print(f"  - existing {key}: {existing_repr.get(key)}")
+                        print(f"  - requested {key}: {requested_repr.get(key)}")
+                        force_for_target_mismatch = True
         except Exception as exc:
             print(f"[reuse_existing] Could not inspect existing flow teacher target ({exc}); recomputing.")
             force_for_target_mismatch = True
