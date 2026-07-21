@@ -280,11 +280,16 @@ def build_flow_features(
                 x_target = safe_prefix_by_layer[layer][prefix_i].float()
                 target_sample_id = str(safe_prefix_metadata[prefix_i].get("id", sid)) + ":safe_answer_prefix"
             else:
-                if ri is None:
-                    raise ValueError(f"Flow target {target_cfg['mode']} requires retain samples.")
-                xr = target_hidden_by_layer[layer][target_ri].float()
-                x_target = target_cfg["safe_weight"] * xs + target_cfg["retain_weight"] * xr
-                target_sample_id = sid if target_cfg["mode"] == "safe_neighbor" else rid if target_cfg["mode"] == "retain" else f"{sid}+{rid}"
+                if target_cfg["mode"] == "safe_neighbor":
+                    xr = None
+                    x_target = xs
+                    target_sample_id = sid
+                else:
+                    if ri is None:
+                        raise ValueError(f"Flow target {target_cfg['mode']} requires retain samples.")
+                    xr = target_hidden_by_layer[layer][target_ri].float()
+                    x_target = target_cfg["safe_weight"] * xs + target_cfg["retain_weight"] * xr
+                    target_sample_id = rid if target_cfg["mode"] == "retain" else f"{sid}+{rid}"
             delta_to_target = xh - x_target
             ch = compute_risk_delta_coefficients(delta_to_target[None, :], layer, rec, basis)[0]
             cs = compute_risk_coefficients(xs[None, :], layer, rec, basis, centers)[0]
